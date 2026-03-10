@@ -6,6 +6,7 @@
 ![FastAPI](https://img.shields.io/badge/FastAPI-0.116.1-green.svg)
 ![Python](https://img.shields.io/badge/Python-3.10+-blue.svg)
 </div>
+
 ## 快速开始
 
 ### 环境要求
