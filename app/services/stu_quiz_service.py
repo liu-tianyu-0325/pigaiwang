@@ -2,14 +2,18 @@
 
 from __future__ import annotations
 
+from asyncio import get_running_loop
 from datetime import datetime
 
 from fastapi import status
+from loguru import logger
 from sqlalchemy import and_, delete, desc, func, select
 
 from app.common.time_ import to_naive_utc
+from app.services.answer_grading_service import answer_grading_service
 from app.storage import AsyncSessionLocal, GradingStatus, ResultStatus, SubmissionStatus
 from app.storage.database_models import (
+    AIGradingLog,
     AnswerTypicalErrorRel,
     ClassRoom,
     ClassStudent,
@@ -54,7 +58,9 @@ class StuQuizService:
             return "未作答"
         if answer.grading_status == GradingStatus.graded:
             return "已批改"
-        return "已提交"
+        if answer.grading_status == GradingStatus.grading:
+            return "批改中"
+        return "待批改"
 
     def _build_result_status_text(self, answer: SubmissionAnswer | None) -> str:
         if answer is None or not answer.is_answered:
@@ -319,11 +325,15 @@ class StuQuizService:
                     status.HTTP_200_OK,
                     "获取成功",
                     {
+                        "answer_id": str(answer.id) if answer else None,
                         "question_id": str(question.id),
                         "question": question.content_md,
+                        "reference_answer": question.reference_answer,
                         "my_answer": answer.answer_md if answer else None,
                         "duration_sec": answer.duration_sec if answer else 0,
                         "submitted_at": answer.submitted_at if answer else None,
+                        "ai_score": answer.ai_score if answer else 0,
+                        "final_score": answer.final_score if answer else 0,
                         "ai_feedback": answer.ai_feedback if answer else None,
                         "teacher_feedback": answer.teacher_feedback if answer else None,
                         "grading_status": self._build_answer_grading_status(answer),
@@ -471,17 +481,165 @@ class StuQuizService:
                 else:
                     submission.status = SubmissionStatus.in_progress
 
+                answer_id_value = int(answer.id)
+                should_trigger_ai = bool(answer.is_answered)
                 response_data = {
                     "submission_id": str(submission.id),
-                    "answer_id": str(answer.id),
+                    "answer_id": str(answer_id_value),
                     "answered_count": answered_count,
+                    "grading_status": self._build_answer_grading_status(answer),
                     "submission_status": submission.status.value,
                     "submitted_at": submit_time,
                 }
                 await session.commit()
+                if should_trigger_ai:
+                    try:
+                        get_running_loop()
+                        answer_grading_service.schedule_grade_answer(answer_id_value)
+                    except RuntimeError:
+                        logger.warning("当前上下文无事件循环，未能自动调度 AI 批改")
                 return True, status.HTTP_200_OK, "提交成功", response_data
             except Exception as e:
                 await session.rollback()
+                return (
+                    False,
+                    status.HTTP_500_INTERNAL_SERVER_ERROR,
+                    f"操作失败，请稍后重试: {e}",
+                    None,
+                )
+
+    async def trigger_answer_grading(
+        self,
+        student_id: str,
+        answer_id: str,
+    ) -> tuple[bool, int, str, dict | None]:
+        """手动触发指定答案的 AI 批改。"""
+        async with AsyncSessionLocal() as session:
+            try:
+                answer = (
+                    await session.execute(
+                        select(SubmissionAnswer, QuizSubmission)
+                        .join(
+                            QuizSubmission,
+                            QuizSubmission.id == SubmissionAnswer.submission_id,
+                        )
+                        .where(
+                            SubmissionAnswer.id == int(answer_id),
+                            QuizSubmission.student_id == int(student_id),
+                        )
+                    )
+                ).first()
+                if answer is None:
+                    return False, status.HTTP_404_NOT_FOUND, "答案不存在", None
+
+                answer_entity = answer[0]
+                if not answer_entity.is_answered:
+                    return (
+                        False,
+                        status.HTTP_400_BAD_REQUEST,
+                        "当前答案未作答，无法触发 AI 批改",
+                        None,
+                    )
+
+                answer_grading_service.schedule_grade_answer(int(answer_id))
+                return (
+                    True,
+                    status.HTTP_200_OK,
+                    "AI 批改任务已触发",
+                    {
+                        "answer_id": str(answer_entity.id),
+                        "grading_status": self._build_answer_grading_status(
+                            answer_entity
+                        ),
+                    },
+                )
+            except Exception as e:
+                return (
+                    False,
+                    status.HTTP_500_INTERNAL_SERVER_ERROR,
+                    f"操作失败，请稍后重试: {e}",
+                    None,
+                )
+
+    async def get_answer_grading_view(
+        self,
+        student_id: str,
+        answer_id: str,
+    ) -> tuple[bool, int, str, dict | None]:
+        """获取指定答案的 AI 批改视图。"""
+        async with AsyncSessionLocal() as session:
+            try:
+                row = (
+                    await session.execute(
+                        select(SubmissionAnswer, QuizSubmission, Question)
+                        .join(
+                            QuizSubmission,
+                            QuizSubmission.id == SubmissionAnswer.submission_id,
+                        )
+                        .join(Question, Question.id == SubmissionAnswer.question_id)
+                        .where(
+                            SubmissionAnswer.id == int(answer_id),
+                            QuizSubmission.student_id == int(student_id),
+                        )
+                    )
+                ).first()
+                if row is None:
+                    return False, status.HTTP_404_NOT_FOUND, "答案不存在", None
+
+                answer, _, question = row
+                image_urls = list(
+                    (
+                        await session.execute(
+                            select(SubmissionAnswerImage.image_url)
+                            .where(SubmissionAnswerImage.answer_id == answer.id)
+                            .order_by(
+                                SubmissionAnswerImage.sort_no.asc(),
+                                SubmissionAnswerImage.id.asc(),
+                            )
+                        )
+                    )
+                    .scalars()
+                    .all()
+                )
+                latest_log = (
+                    (
+                        await session.execute(
+                            select(AIGradingLog)
+                            .where(AIGradingLog.answer_id == answer.id)
+                            .order_by(
+                                AIGradingLog.created_at.desc(), AIGradingLog.id.desc()
+                            )
+                        )
+                    )
+                    .scalars()
+                    .first()
+                )
+
+                return (
+                    True,
+                    status.HTTP_200_OK,
+                    "获取成功",
+                    {
+                        "answer_id": str(answer.id),
+                        "quiz_id": str(answer.quiz_id),
+                        "question_id": str(answer.question_id),
+                        "question": question.content_md,
+                        "reference_answer": question.reference_answer,
+                        "my_answer": answer.answer_md,
+                        "image_urls": image_urls,
+                        "submitted_at": answer.submitted_at,
+                        "grading_status": self._build_answer_grading_status(answer),
+                        "result_status": self._build_result_status_text(answer),
+                        "ai_score": answer.ai_score,
+                        "final_score": answer.final_score,
+                        "ai_feedback": answer.ai_feedback,
+                        "model_name": latest_log.model_name if latest_log else None,
+                        "ai_result_status": latest_log.ai_result_status
+                        if latest_log
+                        else None,
+                    },
+                )
+            except Exception as e:
                 return (
                     False,
                     status.HTTP_500_INTERNAL_SERVER_ERROR,

@@ -3,7 +3,7 @@
 import os
 from typing import ClassVar, Literal
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -84,10 +84,12 @@ class Settings(BaseSettings):
     # 示例（通义千问兼容模式）：
     # - LLM_BASE_URL=https://dashscope.aliyuncs.com/compatible-mode/v1
     # - LLM_MODEL_KEY=qwen3-max
+    # - LLM_VISION_MODEL_KEY=qwen-vl-max-latest
     # - LLM_API_KEY=sk-xxxx
     LLM_BASE_URL: str = "https://dashscope.aliyuncs.com/compatible-mode/v1"
     LLM_MODEL_KEY: str = "qwen3-max"
-    LLM_API_KEY: str = ""
+    LLM_VISION_MODEL_KEY: str = "qwen-vl-max-latest"
+    LLM_API_KEY: str = Field(default="", validation_alias="DASHSCOPE_API_KEY")
 
     # ==================== 业务限制 ====================
     FREE_DAILY_LIMIT: int = 20  # 免费用户每天生成次数

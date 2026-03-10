@@ -5,16 +5,20 @@ from loguru import logger
 
 from app.api.form_response import BaseResponseModel
 from app.api.form_response.stu_quiz_response import (
+    StuAnswerGradingViewResponseModel,
     StuQuestionDetailResponseModel,
     StuQuizDetailResponseModel,
     StuQuizListResponseModel,
     StuSubmitAnswerResponseModel,
+    StuTriggerAnswerGradingResponseModel,
 )
 from app.api.form_validation.stu_quiz_validation import (
+    StuAnswerGradingViewRequest,
     StuQuestionDetailRequest,
     StuQuizDetailRequest,
     StuQuizListRequest,
     StuSubmitAnswerRequest,
+    StuTriggerAnswerGradingRequest,
 )
 from app.services.stu_quiz_service import stu_quiz_service
 
@@ -96,6 +100,48 @@ async def submit_stu_answer(request: StuSubmitAnswerRequest):
     log.info("学生提交答案")
     res, code, message, data = await stu_quiz_service.submit_answer(
         **request.model_dump()
+    )
+    log.info(message)
+    return {"res": res, "code": code, "message": message, "data": data}
+
+
+@router.post(
+    "/answer/grade",
+    response_model=BaseResponseModel[StuTriggerAnswerGradingResponseModel],
+    summary="手动触发 AI 批改",
+)
+async def trigger_stu_answer_grading(request: StuTriggerAnswerGradingRequest):
+    """学生手动触发指定答案的 AI 批改。"""
+    log = logger.bind(
+        log_type="user",
+        student_id=request.student_id,
+        answer_id=request.answer_id,
+    )
+    log.info("学生手动触发 AI 批改")
+    res, code, message, data = await stu_quiz_service.trigger_answer_grading(
+        request.student_id,
+        request.answer_id,
+    )
+    log.info(message)
+    return {"res": res, "code": code, "message": message, "data": data}
+
+
+@router.post(
+    "/answer/grading-view",
+    response_model=BaseResponseModel[StuAnswerGradingViewResponseModel],
+    summary="查看 AI 批改视图",
+)
+async def get_stu_answer_grading_view(request: StuAnswerGradingViewRequest):
+    """查看指定答案的 AI 批改详情。"""
+    log = logger.bind(
+        log_type="user",
+        student_id=request.student_id,
+        answer_id=request.answer_id,
+    )
+    log.info("学生查看 AI 批改视图")
+    res, code, message, data = await stu_quiz_service.get_answer_grading_view(
+        request.student_id,
+        request.answer_id,
     )
     log.info(message)
     return {"res": res, "code": code, "message": message, "data": data}
