@@ -4,7 +4,6 @@
 路由管理、中间件注册、日志配置、任务队列管理等核心功能。
 """
 
-import asyncio
 import importlib
 import logging
 import multiprocessing
@@ -20,18 +19,15 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from loguru import logger
 
-from app.auth import admin_base
 from app.common.time_ import human_duration
 from app.configs import base_configs
 from app.core import s3_client
 from app.storage import init_db, stop_db
-from app.tasks.models import AnyTask  # noqa: F401 导入任务模型，使其自动创建数据表
 from app.utils.async_worker_id_allocator import worker_id_allocator
 from app.utils.handle_exceptions import (
     init_loop_exc_handler,
     register_exception_handlers,
 )
-from app.utils.logger import AsyncLogService, setup_logger
 from app.utils.middlewares import register_middlewares
 from app.utils.snowflake_id import snowflake_id_gen
 
@@ -62,6 +58,8 @@ router_lis: list[str] = []
 routers_dir = os.path.join(base_configs.PROJECT_DIR, "app/api/routers")
 for filename in os.listdir(routers_dir):
     name: str = filename.split(".")[0]
+    if name in {"admin_base_router", "admin_log_router"}:
+        continue
     if name.endswith("router") and filename != "__init__":
         router_lis.append(name)
 
@@ -91,20 +89,10 @@ async def lifespan(app: FastAPI):
     log = logger.bind(log_type="system")
     _pid = os.getpid()  # 区分不同 worker 进程
     _t0 = time.perf_counter()  # 计算运行时长（单调时钟）
-    log_service = AsyncLogService(
-        batch_size=2000,
-        flush_interval=1.0,
-        queue_maxsize=200_000,
-        drop_when_full=True,
-    )
-    app.state.log_service = log_service
 
     try:
         print("初始化数据库")
         await init_db()  # 初始化数据库
-        print("初始化管理员账号")
-        await admin_base.init_admin()  # 初始化管理员账号
-        print("管理员账号初始化完成")
         print("数据库初始化完成")
 
         print("初始化s3存储桶")
@@ -119,11 +107,6 @@ async def lifespan(app: FastAPI):
         print("✅ 路由加载完毕")
 
         setup_logging()  # 配置日志
-
-        print("初始化日志模块")
-        setup_logger(log_service)
-        await log_service.start()  # 启动日志队列
-        print("日志模块初始化成功")
 
         log.info(f"进程ID:{_pid} 正在启动服务")
 
@@ -146,13 +129,6 @@ async def lifespan(app: FastAPI):
         log.info(
             f"进程ID: {_pid} 停止服务, 开始执行优雅停机流程, 服务累计运行 {human_duration(uptime)}"
         )
-
-        # 清空 Loguru 内部队列
-        try:
-            await asyncio.wait_for(log_service.shutdown(), timeout=5.0)
-            log.info("Loguru 队列已清空")
-        except asyncio.TimeoutError:
-            log.warning("Loguru 清空超时")
         try:
             await stop_db()
             log.info("数据库连接池已关闭")

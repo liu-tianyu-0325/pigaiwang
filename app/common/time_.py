@@ -10,7 +10,7 @@
 统一使用中国时区，便于业务时间展示和计算。
 """
 
-from datetime import datetime
+from datetime import UTC, datetime
 from zoneinfo import ZoneInfo
 
 zone_info: ZoneInfo = ZoneInfo("Asia/Shanghai")  # 默认使用上海时区
@@ -23,6 +23,24 @@ def time_now() -> datetime:
         datetime: 系统时区的当前时间
     """
     return datetime.now(zone_info)
+
+
+def to_naive_utc(value: datetime | None) -> datetime | None:
+    """将时间归一化为无时区 UTC 时间。
+
+    适用于数据库列为 `TIMESTAMP WITHOUT TIME ZONE` 的场景。
+
+    Args:
+        value: 原始时间对象，可为带时区或无时区
+
+    Returns:
+        datetime | None: 无时区的 UTC 时间；若输入为 None 则返回 None
+    """
+    if value is None:
+        return None
+    if value.tzinfo is None:
+        return value
+    return value.astimezone(UTC).replace(tzinfo=None)
 
 
 def human_duration(seconds: float) -> str:

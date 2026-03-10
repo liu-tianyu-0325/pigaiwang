@@ -1,485 +1,652 @@
-"""数据库模型定义文件.
+from __future__ import annotations
 
-所有模型继承 AbstractBaseModel，使用雪花ID主键和软删除机制。
+"""数据库模型定义文件。
+
+保留当前模板依赖的管理员模型，并新增按业务设计的题库/测验相关表结构。
 """
 
 from datetime import datetime
-from typing import Optional
+from enum import Enum
 
 from sqlalchemy import (
-    JSON,
-    TIMESTAMP,
+    BigInteger,
     Boolean,
+    DateTime,
     ForeignKey,
     Integer,
     String,
     Text,
+    UniqueConstraint,
 )
-from sqlalchemy.orm import Mapped, mapped_column, relationship
-
-from app.storage.base import (
-    AbstractBaseModel,
-    BeijingTimeZone,
-    StringifiedBigInt,
-    register_model,
+from sqlalchemy import (
+    Enum as SqlEnum,
 )
-from app.utils.snowflake_id import generate_id
+from sqlalchemy.dialects.postgresql import JSONB
+from sqlalchemy.orm import Mapped, mapped_column
 
-# ==================== 用户模块 ====================
+from app.storage.base import Base, register_model
+
+
+class TimeMixin:
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=False), default=datetime.utcnow, nullable=False
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=False),
+        default=datetime.utcnow,
+        onupdate=datetime.utcnow,
+        nullable=False,
+    )
+
+
+class CreatedAtMixin:
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=False), default=datetime.utcnow, nullable=False
+    )
+
+
+class UserRole(str, Enum):
+    teacher = "teacher"
+    student = "student"
+    admin = "admin"
+
+
+class UserStatus(int, Enum):
+    disabled = 0
+    enabled = 1
+
+
+class ClassStudentStatus(str, Enum):
+    active = "active"
+    left = "left"
+    disabled = "disabled"
+
+
+class ImportStatus(str, Enum):
+    processing = "processing"
+    finished = "finished"
+    partial_failed = "partial_failed"
+    failed = "failed"
+
+
+class ImportItemResultStatus(str, Enum):
+    success = "success"
+    failed = "failed"
+    duplicate = "duplicate"
+
+
+class QuestionType(str, Enum):
+    single_choice = "single_choice"
+    multiple_choice = "multiple_choice"
+    judge = "judge"
+    fill_blank = "fill_blank"
+    short_answer = "short_answer"
+    proof = "proof"
+    calculation = "calculation"
+
+
+class QuestionStatus(str, Enum):
+    draft = "draft"
+    active = "active"
+    disabled = "disabled"
+
+
+class QuizStatus(str, Enum):
+    draft = "draft"
+    ongoing = "ongoing"
+    completed = "completed"
+    expired = "expired"
+    cancelled = "cancelled"
+
+
+class SubmissionStatus(str, Enum):
+    not_started = "not_started"
+    in_progress = "in_progress"
+    submitted = "submitted"
+    grading = "grading"
+    reviewed = "reviewed"
+    expired = "expired"
+
+
+class GradingStatus(str, Enum):
+    pending = "pending"
+    grading = "grading"
+    graded = "graded"
+
+
+class ResultStatus(str, Enum):
+    correct = "correct"
+    wrong = "wrong"
+    partial = "partial"
+    unanswered = "unanswered"
+
+
+class ReviewActionType(str, Enum):
+    confirm = "confirm"
+    modify_score = "modify_score"
+    modify_result = "modify_result"
+    comment = "comment"
 
 
 @register_model
-class UserModel(AbstractBaseModel):
-    """用户表（users）。.
+class AppUserModel(TimeMixin, Base):
+    __tablename__ = "app_user"
 
-    存储所有注册用户的基本信息。
-    """
-
-    __tablename__ = "users"
-
-    # 主键 ID，使用雪花算法生成，避免暴露自增ID和分布式ID冲突
-    id: Mapped[str] = mapped_column(
-        StringifiedBigInt, default=generate_id, primary_key=True, comment="雪花ID主键"
+    id: Mapped[int | None] = mapped_column(
+        BigInteger, primary_key=True, autoincrement=True
     )
-
+    role: Mapped[UserRole] = mapped_column(
+        SqlEnum(UserRole, name="user_role", native_enum=False, length=20),
+        nullable=False,
+    )
     username: Mapped[str] = mapped_column(
-        String(50), nullable=False, unique=True, comment="登录用户名（可为手机号）"
+        String(64), nullable=False, unique=True, index=True
     )
-    password_hash: Mapped[str] = mapped_column(
-        String(255), nullable=False, comment="密码哈希值（加盐加密）"
-    )
-    phone: Mapped[str] = mapped_column(
-        String(50), unique=True, comment="手机号（用于找回密码）"
-    )
+    password_hash: Mapped[str] = mapped_column(String(255), nullable=False)
+    real_name: Mapped[str] = mapped_column(String(64), nullable=False)
+    mobile: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    email: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    avatar_url: Mapped[str | None] = mapped_column(String(500), nullable=True)
     status: Mapped[int] = mapped_column(
-        Integer, default=2, index=True, comment="状态：1-正常，0-禁用，2-待审核"
+        Integer, default=UserStatus.enabled.value, nullable=False
     )
-    is_admin: Mapped[bool] = mapped_column(
-        Boolean, default=False, index=True, comment="是否为管理员（true/false）"
+    last_login_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=False), nullable=True
     )
-    last_login_at: Mapped[Optional[datetime]] = mapped_column(
-        TIMESTAMP(timezone=True), nullable=True, comment="最后登录时间"
-    )
-
-    logs: Mapped[list["UserLogModel"]] = relationship(
-        "UserLogModel",
-        primaryjoin="and_(UserModel.id==UserLogModel.user_id, UserLogModel.user_id.isnot(None))",
-        back_populates="user",
-        cascade="all, delete-orphan",
-        lazy="selectin",
-    )
-
-
-# ==================== 系统日志与配置 ====================
 
 
 @register_model
-class UserLogModel(AbstractBaseModel):
-    """用户日志表（user_logs）。.
+class StudentProfileModel(TimeMixin, Base):
+    __tablename__ = "student_profile"
 
-    记录用户的日志。
-    """
+    id: Mapped[int | None] = mapped_column(
+        BigInteger, primary_key=True, autoincrement=True
+    )
+    user_id: Mapped[int] = mapped_column(
+        BigInteger, ForeignKey("app_user.id"), nullable=False, unique=True, index=True
+    )
+    student_no: Mapped[str] = mapped_column(
+        String(64), nullable=False, unique=True, index=True
+    )
+    gender: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    remark: Mapped[str | None] = mapped_column(String(255), nullable=True)
 
-    __tablename__ = "user_logs"
 
-    # 主键 ID，使用雪花算法生成，避免暴露自增ID和分布式ID冲突
-    id: Mapped[str] = mapped_column(
-        StringifiedBigInt, default=generate_id, primary_key=True, comment="雪花ID主键"
+@register_model
+class TeacherProfileModel(TimeMixin, Base):
+    __tablename__ = "teacher_profile"
+
+    id: Mapped[int | None] = mapped_column(
+        BigInteger, primary_key=True, autoincrement=True
+    )
+    user_id: Mapped[int] = mapped_column(
+        BigInteger, ForeignKey("app_user.id"), nullable=False, unique=True, index=True
+    )
+    subject_name: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    title_name: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    remark: Mapped[str | None] = mapped_column(String(255), nullable=True)
+
+
+@register_model
+class ClassRoomModel(TimeMixin, Base):
+    __tablename__ = "class_room"
+
+    id: Mapped[int | None] = mapped_column(
+        BigInteger, primary_key=True, autoincrement=True
+    )
+    class_name: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    grade_name: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
+    teacher_id: Mapped[int] = mapped_column(
+        BigInteger, ForeignKey("app_user.id"), nullable=False, index=True
+    )
+    class_code: Mapped[str | None] = mapped_column(
+        String(64), nullable=True, unique=True
+    )
+    student_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    finished_quiz_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    remark: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    status: Mapped[int] = mapped_column(Integer, default=1, nullable=False)
+
+
+@register_model
+class ClassStudentModel(CreatedAtMixin, Base):
+    __tablename__ = "class_student"
+    __table_args__ = (
+        UniqueConstraint("class_id", "student_id", name="uq_class_student"),
     )
 
-    user_id: Mapped[None | str] = mapped_column(
-        StringifiedBigInt,
-        ForeignKey("users.id", ondelete="CASCADE"),
-        nullable=True,
-        index=True,
-        comment="操作用户ID",
+    id: Mapped[int | None] = mapped_column(
+        BigInteger, primary_key=True, autoincrement=True
     )
-    action: Mapped[None | str] = mapped_column(
-        String(50),
-        nullable=True,
-        index=True,
-        comment="操作类型：login, recharge, consume 等",
+    class_id: Mapped[int] = mapped_column(
+        BigInteger, ForeignKey("class_room.id"), nullable=False, index=True
     )
-    ip_address: Mapped[None | str] = mapped_column(
-        String(45),
-        nullable=True,
-        index=True,
-        comment="用户IP地址（IPv4/IPv6）",
+    student_id: Mapped[int] = mapped_column(
+        BigInteger, ForeignKey("app_user.id"), nullable=False, index=True
     )
-    user_agent: Mapped[None | str] = mapped_column(Text, comment="浏览器/客户端信息")
-    level: Mapped[str] = mapped_column(
-        String(10),
+    join_status: Mapped[ClassStudentStatus] = mapped_column(
+        SqlEnum(
+            ClassStudentStatus,
+            name="class_student_status",
+            native_enum=False,
+            length=20,
+        ),
+        default=ClassStudentStatus.active,
+        nullable=False,
+    )
+    joined_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=False), default=datetime.utcnow, nullable=False
+    )
+    left_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=False), nullable=True
+    )
+    remark: Mapped[str | None] = mapped_column(String(255), nullable=True)
+
+
+@register_model
+class StudentImportBatchModel(CreatedAtMixin, Base):
+    __tablename__ = "student_import_batch"
+
+    id: Mapped[int | None] = mapped_column(
+        BigInteger, primary_key=True, autoincrement=True
+    )
+    class_id: Mapped[int] = mapped_column(
+        BigInteger, ForeignKey("class_room.id"), nullable=False, index=True
+    )
+    operator_id: Mapped[int] = mapped_column(
+        BigInteger, ForeignKey("app_user.id"), nullable=False, index=True
+    )
+    batch_no: Mapped[str] = mapped_column(
+        String(64), nullable=False, unique=True, index=True
+    )
+    total_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    success_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    fail_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    import_status: Mapped[ImportStatus] = mapped_column(
+        SqlEnum(ImportStatus, name="import_status", native_enum=False, length=20),
+        default=ImportStatus.processing,
+        nullable=False,
+    )
+    remark: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    finished_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=False), nullable=True
+    )
+
+
+@register_model
+class StudentImportBatchItemModel(CreatedAtMixin, Base):
+    __tablename__ = "student_import_batch_item"
+
+    id: Mapped[int | None] = mapped_column(
+        BigInteger, primary_key=True, autoincrement=True
+    )
+    batch_id: Mapped[int] = mapped_column(
+        BigInteger, ForeignKey("student_import_batch.id"), nullable=False, index=True
+    )
+    row_no: Mapped[int] = mapped_column(Integer, nullable=False)
+    student_no: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    student_name: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    username: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    result_status: Mapped[ImportItemResultStatus] = mapped_column(
+        SqlEnum(
+            ImportItemResultStatus,
+            name="import_item_result_status",
+            native_enum=False,
+            length=20,
+        ),
+        default=ImportItemResultStatus.success,
+        nullable=False,
+    )
+    error_message: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    user_id: Mapped[int | None] = mapped_column(
+        BigInteger, ForeignKey("app_user.id"), nullable=True
+    )
+
+
+@register_model
+class QuestionModel(TimeMixin, Base):
+    __tablename__ = "question"
+
+    id: Mapped[int | None] = mapped_column(
+        BigInteger, primary_key=True, autoincrement=True
+    )
+    creator_id: Mapped[int] = mapped_column(
+        BigInteger, ForeignKey("app_user.id"), nullable=False, index=True
+    )
+    content_md: Mapped[str | None] = mapped_column(Text, nullable=True)
+    reference_answer: Mapped[str | None] = mapped_column(Text, nullable=True)
+    question_type: Mapped[QuestionType] = mapped_column(
+        SqlEnum(QuestionType, name="question_type", native_enum=False, length=32),
+        nullable=False,
+    )
+    status: Mapped[QuestionStatus] = mapped_column(
+        SqlEnum(QuestionStatus, name="question_status", native_enum=False, length=20),
+        default=QuestionStatus.active,
+        nullable=False,
+    )
+
+
+@register_model
+class QuestionImageModel(CreatedAtMixin, Base):
+    __tablename__ = "question_image"
+
+    id: Mapped[int | None] = mapped_column(
+        BigInteger, primary_key=True, autoincrement=True
+    )
+    question_id: Mapped[int] = mapped_column(
+        BigInteger, ForeignKey("question.id"), nullable=False, index=True
+    )
+    image_url: Mapped[str] = mapped_column(String(500), nullable=False)
+    sort_no: Mapped[int] = mapped_column(Integer, default=1, nullable=False)
+
+
+@register_model
+class TagModel(CreatedAtMixin, Base):
+    __tablename__ = "tag"
+
+    id: Mapped[int | None] = mapped_column(
+        BigInteger, primary_key=True, autoincrement=True
+    )
+    tag_name: Mapped[str] = mapped_column(
+        String(64), nullable=False, unique=True, index=True
+    )
+    created_by: Mapped[int | None] = mapped_column(
+        BigInteger, ForeignKey("app_user.id"), nullable=True
+    )
+
+
+@register_model
+class QuestionTagRelModel(Base):
+    __tablename__ = "question_tag_rel"
+    __table_args__ = (
+        UniqueConstraint("question_id", "tag_id", name="uq_question_tag_rel"),
+    )
+
+    id: Mapped[int | None] = mapped_column(
+        BigInteger, primary_key=True, autoincrement=True
+    )
+    question_id: Mapped[int] = mapped_column(
+        BigInteger, ForeignKey("question.id"), nullable=False, index=True
+    )
+    tag_id: Mapped[int] = mapped_column(
+        BigInteger, ForeignKey("tag.id"), nullable=False, index=True
+    )
+
+
+@register_model
+class QuizModel(TimeMixin, Base):
+    __tablename__ = "quiz"
+
+    id: Mapped[int | None] = mapped_column(
+        BigInteger, primary_key=True, autoincrement=True
+    )
+    quiz_name: Mapped[str] = mapped_column(String(128), nullable=False, index=True)
+    creator_id: Mapped[int] = mapped_column(
+        BigInteger, ForeignKey("app_user.id"), nullable=False, index=True
+    )
+    question_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    total_score: Mapped[float] = mapped_column(default=100, nullable=False)
+    due_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=False), nullable=False, index=True
+    )
+    status: Mapped[QuizStatus] = mapped_column(
+        SqlEnum(QuizStatus, name="quiz_status", native_enum=False, length=20),
+        default=QuizStatus.draft,
+        nullable=False,
+    )
+
+
+@register_model
+class QuizClassRelModel(CreatedAtMixin, Base):
+    __tablename__ = "quiz_class_rel"
+    __table_args__ = (
+        UniqueConstraint("quiz_id", "class_id", name="uq_quiz_class_rel"),
+    )
+
+    id: Mapped[int | None] = mapped_column(
+        BigInteger, primary_key=True, autoincrement=True
+    )
+    quiz_id: Mapped[int] = mapped_column(
+        BigInteger, ForeignKey("quiz.id"), nullable=False, index=True
+    )
+    class_id: Mapped[int] = mapped_column(
+        BigInteger, ForeignKey("class_room.id"), nullable=False, index=True
+    )
+    target_student_count: Mapped[int] = mapped_column(
+        Integer, default=0, nullable=False
+    )
+    submitted_student_count: Mapped[int] = mapped_column(
+        Integer, default=0, nullable=False
+    )
+    submit_rate: Mapped[float] = mapped_column(default=0, nullable=False)
+    avg_score: Mapped[float] = mapped_column(default=0, nullable=False)
+    avg_accuracy_rate: Mapped[float] = mapped_column(default=0, nullable=False)
+
+
+@register_model
+class QuizQuestionModel(Base):
+    __tablename__ = "quiz_question"
+    __table_args__ = (
+        UniqueConstraint("quiz_id", "question_id", name="uq_quiz_question"),
+    )
+
+    id: Mapped[int | None] = mapped_column(
+        BigInteger, primary_key=True, autoincrement=True
+    )
+    quiz_id: Mapped[int] = mapped_column(
+        BigInteger, ForeignKey("quiz.id"), nullable=False, index=True
+    )
+    question_id: Mapped[int] = mapped_column(
+        BigInteger, ForeignKey("question.id"), nullable=False, index=True
+    )
+    sort_no: Mapped[int] = mapped_column(Integer, default=1, nullable=False)
+    score: Mapped[float] = mapped_column(default=0, nullable=False)
+
+
+@register_model
+class QuizSubmissionModel(TimeMixin, Base):
+    __tablename__ = "quiz_submission"
+    __table_args__ = (
+        UniqueConstraint("quiz_id", "student_id", name="uq_quiz_submission"),
+    )
+
+    id: Mapped[int | None] = mapped_column(
+        BigInteger, primary_key=True, autoincrement=True
+    )
+    quiz_id: Mapped[int] = mapped_column(
+        BigInteger, ForeignKey("quiz.id"), nullable=False, index=True
+    )
+    class_id: Mapped[int] = mapped_column(
+        BigInteger, ForeignKey("class_room.id"), nullable=False, index=True
+    )
+    student_id: Mapped[int] = mapped_column(
+        BigInteger, ForeignKey("app_user.id"), nullable=False, index=True
+    )
+    status: Mapped[SubmissionStatus] = mapped_column(
+        SqlEnum(
+            SubmissionStatus, name="submission_status", native_enum=False, length=20
+        ),
+        default=SubmissionStatus.not_started,
         nullable=False,
         index=True,
-        comment="日志级别: INFO, WARNING, ERROR等",
     )
-    message: Mapped[None | str] = mapped_column(
-        Text,
-        comment="日志消息",
+    question_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    answered_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    correct_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    final_score: Mapped[float] = mapped_column(default=0, nullable=False)
+    accuracy_rate: Mapped[float] = mapped_column(default=0, nullable=False)
+    total_duration_sec: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    started_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=False), nullable=True
     )
-
-    # 关联关系
-    user: Mapped[Optional["UserModel"]] = relationship(
-        "UserModel", back_populates="logs", lazy="selectin"
+    submitted_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=False), nullable=True
+    )
+    reviewed_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=False), nullable=True
     )
 
 
 @register_model
-class SystemLogModel(AbstractBaseModel):
-    """系统操作日志表（system_logs）。.
-
-    记录关键操作行为，用于审计与排查。
-    """
-
-    __tablename__ = "system_logs"
-
-    # 主键 ID，使用雪花算法生成，避免暴露自增ID和分布式ID冲突
-    id: Mapped[str] = mapped_column(
-        StringifiedBigInt, default=generate_id, primary_key=True, comment="雪花ID主键"
+class SubmissionAnswerModel(TimeMixin, Base):
+    __tablename__ = "submission_answer"
+    __table_args__ = (
+        UniqueConstraint("submission_id", "question_id", name="uq_submission_answer"),
     )
 
-    action: Mapped[None | str] = mapped_column(
-        String(50),
-        nullable=True,
-        index=True,
-        comment="操作类型：login, recharge, consume 等",
+    id: Mapped[int | None] = mapped_column(
+        BigInteger, primary_key=True, autoincrement=True
     )
-    level: Mapped[str] = mapped_column(
-        String(10),
+    submission_id: Mapped[int] = mapped_column(
+        BigInteger, ForeignKey("quiz_submission.id"), nullable=False, index=True
+    )
+    quiz_id: Mapped[int] = mapped_column(
+        BigInteger, ForeignKey("quiz.id"), nullable=False, index=True
+    )
+    question_id: Mapped[int] = mapped_column(
+        BigInteger, ForeignKey("question.id"), nullable=False, index=True
+    )
+    sort_no: Mapped[int] = mapped_column(Integer, default=1, nullable=False)
+    answer_md: Mapped[str | None] = mapped_column(Text, nullable=True)
+    is_answered: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    grading_status: Mapped[GradingStatus] = mapped_column(
+        SqlEnum(GradingStatus, name="grading_status", native_enum=False, length=20),
+        default=GradingStatus.pending,
         nullable=False,
         index=True,
-        comment="日志级别: INFO, WARNING, ERROR 等",
     )
-    message: Mapped[None | str] = mapped_column(Text, comment="日志消息")
-
-
-@register_model
-class CanvasModel(AbstractBaseModel):
-    """画布表 (canvas) - 存储画布的基础元数据"""
-
-    __tablename__ = "canvas"
-
-    id: Mapped[str] = mapped_column(
-        StringifiedBigInt, default=generate_id, primary_key=True, comment="雪花ID主键"
-    )
-    user_id: Mapped[str] = mapped_column(
-        StringifiedBigInt,
+    result_status: Mapped[ResultStatus] = mapped_column(
+        SqlEnum(ResultStatus, name="result_status", native_enum=False, length=20),
+        default=ResultStatus.unanswered,
+        nullable=False,
         index=True,
+    )
+    ai_score: Mapped[float] = mapped_column(default=0, nullable=False)
+    final_score: Mapped[float] = mapped_column(default=0, nullable=False)
+    duration_sec: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    submitted_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=False), nullable=True
+    )
+    ai_feedback: Mapped[str | None] = mapped_column(Text, nullable=True)
+    teacher_feedback: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+
+@register_model
+class SubmissionAnswerImageModel(CreatedAtMixin, Base):
+    __tablename__ = "submission_answer_image"
+
+    id: Mapped[int | None] = mapped_column(
+        BigInteger, primary_key=True, autoincrement=True
+    )
+    answer_id: Mapped[int] = mapped_column(
+        BigInteger, ForeignKey("submission_answer.id"), nullable=False, index=True
+    )
+    image_url: Mapped[str] = mapped_column(String(500), nullable=False)
+    sort_no: Mapped[int] = mapped_column(Integer, default=1, nullable=False)
+
+
+@register_model
+class AIGradingLogModel(CreatedAtMixin, Base):
+    __tablename__ = "ai_grading_log"
+
+    id: Mapped[int | None] = mapped_column(
+        BigInteger, primary_key=True, autoincrement=True
+    )
+    answer_id: Mapped[int] = mapped_column(
+        BigInteger, ForeignKey("submission_answer.id"), nullable=False, index=True
+    )
+    model_name: Mapped[str] = mapped_column(String(64), nullable=False)
+    prompt_snapshot: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+    input_snapshot: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+    output_snapshot: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+    ai_result_status: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    ai_score: Mapped[float] = mapped_column(default=0, nullable=False)
+
+
+@register_model
+class AnswerReviewLogModel(CreatedAtMixin, Base):
+    __tablename__ = "answer_review_log"
+
+    id: Mapped[int | None] = mapped_column(
+        BigInteger, primary_key=True, autoincrement=True
+    )
+    answer_id: Mapped[int] = mapped_column(
+        BigInteger, ForeignKey("submission_answer.id"), nullable=False, index=True
+    )
+    reviewer_id: Mapped[int] = mapped_column(
+        BigInteger, ForeignKey("app_user.id"), nullable=False, index=True
+    )
+    action_type: Mapped[ReviewActionType] = mapped_column(
+        SqlEnum(
+            ReviewActionType, name="review_action_type", native_enum=False, length=20
+        ),
         nullable=False,
-        comment="关联创建该画布的用户ID（逻辑外键）",
     )
-    name: Mapped[str] = mapped_column(String(255), nullable=False, comment="画布名称")
-    description: Mapped[Optional[str]] = mapped_column(
-        Text, nullable=True, comment="画布的详细介绍"
-    )
-    location: Mapped[Optional[str]] = mapped_column(
-        Text, nullable=True, comment="画布文件夹路径"
-    )
-    default_canvas_parmas: Mapped[Optional[dict]] = mapped_column(
-        JSON, nullable=True, comment="默认画布配置"
-    )
+    old_result_status: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    new_result_status: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    old_score: Mapped[float | None] = mapped_column(nullable=True)
+    new_score: Mapped[float | None] = mapped_column(nullable=True)
+    remark: Mapped[str | None] = mapped_column(String(500), nullable=True)
 
 
 @register_model
-class DefaultCanvasRuleModel(AbstractBaseModel):
-    """画布配置默认表 (default_canvas_rules)"""
-
-    __tablename__ = "default_canvas_rules"
-
-    id: Mapped[str] = mapped_column(
-        StringifiedBigInt, default=generate_id, primary_key=True, comment="雪花ID主键"
-    )
-    default_canvas_parmas: Mapped[Optional[dict]] = mapped_column(
-        JSON, nullable=True, comment="全局默认的画布配置"
+class TypicalErrorPatternModel(TimeMixin, Base):
+    __tablename__ = "typical_error_pattern"
+    __table_args__ = (
+        UniqueConstraint(
+            "question_id", "pattern_name", name="uq_typical_error_pattern"
+        ),
     )
 
-
-# ==================== 节点与规则配置模块 ====================
-
-
-@register_model
-class CanvasNodeRuleModel(AbstractBaseModel):
-    """画布节点配置表 (canvas_node_rule) - 特定画布的节点默认行为"""
-
-    __tablename__ = "canvas_node_rule"
-
-    id: Mapped[str] = mapped_column(
-        StringifiedBigInt, default=generate_id, primary_key=True, comment="雪花ID主键"
+    id: Mapped[int | None] = mapped_column(
+        BigInteger, primary_key=True, autoincrement=True
     )
-    canvas_id: Mapped[str] = mapped_column(
-        StringifiedBigInt,
-        index=True,
-        nullable=False,
-        comment="关联的画布ID（逻辑外键）",
+    question_id: Mapped[int] = mapped_column(
+        BigInteger, ForeignKey("question.id"), nullable=False, index=True
     )
-    node_type: Mapped[str] = mapped_column(
-        String(50), nullable=False, unique=True, comment="绑定的节点类型"
-    )
-    default_model_params: Mapped[Optional[dict]] = mapped_column(
-        JSON, nullable=True, comment="默认使用的模型及参数"
-    )
-    default_node_params: Mapped[Optional[dict]] = mapped_column(
-        JSON, nullable=True, comment="节点表单的其他默认参数"
-    )
+    pattern_name: Mapped[str] = mapped_column(String(128), nullable=False, index=True)
+    pattern_desc: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    suggestion_text: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    hit_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
 
 
 @register_model
-class DefaultCanvasNodeRuleModel(AbstractBaseModel):
-    """画布节点默认配置表 (default_canvas_node_rule) - 全局基础的节点默认配置"""
-
-    __tablename__ = "default_canvas_node_rule"
-
-    id: Mapped[str] = mapped_column(
-        StringifiedBigInt, default=generate_id, primary_key=True, comment="雪花ID主键"
-    )
-    node_type: Mapped[str] = mapped_column(
-        String(50), nullable=False, unique=True, comment="绑定的节点类型"
-    )
-    default_model_params: Mapped[Optional[dict]] = mapped_column(
-        JSON, nullable=True, comment="默认使用的模型及参数"
-    )
-    default_node_params: Mapped[Optional[dict]] = mapped_column(
-        JSON, nullable=True, comment="节点表单的其他默认参数"
+class AnswerTypicalErrorRelModel(CreatedAtMixin, Base):
+    __tablename__ = "answer_typical_error_rel"
+    __table_args__ = (
+        UniqueConstraint("answer_id", "pattern_id", name="uq_answer_typical_error_rel"),
     )
 
-
-# ==================== 工作流与节点实例模块 ====================
-
-
-@register_model
-class NodeModel(AbstractBaseModel):
-    """节点表 (node) - 画布上的具体节点实例"""
-
-    __tablename__ = "node"
-
-    id: Mapped[str] = mapped_column(
-        StringifiedBigInt, default=generate_id, primary_key=True, comment="雪花ID主键"
+    id: Mapped[int | None] = mapped_column(
+        BigInteger, primary_key=True, autoincrement=True
     )
-    canvas_id: Mapped[str] = mapped_column(
-        StringifiedBigInt, index=True, nullable=False, comment="所属画布ID（逻辑外键）"
+    answer_id: Mapped[int] = mapped_column(
+        BigInteger, ForeignKey("submission_answer.id"), nullable=False, index=True
     )
-    node_type: Mapped[str] = mapped_column(
-        String(50), nullable=False, comment="节点类型"
+    pattern_id: Mapped[int] = mapped_column(
+        BigInteger, ForeignKey("typical_error_pattern.id"), nullable=False, index=True
     )
-    measured: Mapped[Optional[dict]] = mapped_column(
-        JSON, nullable=True, comment="节点尺寸信息"
-    )
-    position: Mapped[Optional[dict]] = mapped_column(
-        JSON, nullable=True, comment="节点在画布上的坐标"
-    )
-    prompt: Mapped[Optional[str]] = mapped_column(
-        Text, nullable=True, comment="节点提示词"
-    )
-    resource_ids: Mapped[Optional[list]] = mapped_column(
-        JSON, nullable=True, comment="节点资源列表"
-    )
-    model_params: Mapped[Optional[dict]] = mapped_column(
-        JSON, nullable=True, default={}, comment="记录的模型及其参数"
-    )
-    node_params: Mapped[Optional[dict]] = mapped_column(
-        JSON, nullable=True, default={}, comment="除模型外的节点参数配置"
-    )
-    status: Mapped[Optional[str]] = mapped_column(
-        String(20),
-        nullable=True,
-        default="idle",
-        comment="节点状态(idle/running/completed)",
-    )
-    group_id: Mapped[Optional[str]] = mapped_column(
-        StringifiedBigInt, index=True, nullable=True, comment="所属组ID（逻辑外键）"
-    )
-    created_by: Mapped[str] = mapped_column(
-        StringifiedBigInt, index=True, nullable=False, comment="创建人ID（逻辑外键）"
-    )
+    is_primary: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
 
 
-@register_model
-class NodeConnectionModel(AbstractBaseModel):
-    """节点关系表 (node_connection) - 节点间的连线"""
-
-    __tablename__ = "node_connection"
-
-    id: Mapped[str] = mapped_column(
-        StringifiedBigInt,
-        default=generate_id,
-        primary_key=True,
-        comment="连线唯一标识雪花ID",
-    )
-    canvas_id: Mapped[str] = mapped_column(
-        StringifiedBigInt, index=True, nullable=False, comment="所属画布ID（逻辑外键）"
-    )
-    source: Mapped[str] = mapped_column(
-        StringifiedBigInt, index=True, nullable=False, comment="起点节点ID（逻辑外键）"
-    )
-    target: Mapped[str] = mapped_column(
-        StringifiedBigInt, index=True, nullable=False, comment="终点节点ID（逻辑外键）"
-    )
-    deletable: Mapped[bool] = mapped_column(
-        Boolean, default=True, nullable=True, comment="当前连线是否可删除"
-    )
-    selectable: Mapped[bool] = mapped_column(
-        Boolean, default=True, nullable=True, comment="当前连线是否可选择"
-    )
-    connection_type: Mapped[str] = mapped_column(
-        String(50), default="default", nullable=True, comment="连线类型"
-    )
-
-
-@register_model
-class ConnectionRuleModel(AbstractBaseModel):
-    """可连线的节点规则表 (connection_rule) - 限制哪些节点可以相连"""
-
-    __tablename__ = "connection_rule"
-
-    id: Mapped[str] = mapped_column(
-        StringifiedBigInt,
-        default=generate_id,
-        primary_key=True,
-        comment="规则唯一标识雪花ID",
-    )
-    source_type: Mapped[str] = mapped_column(
-        String(50), nullable=False, comment="起点节点类型"
-    )
-    target_type: Mapped[str] = mapped_column(
-        String(50), nullable=False, comment="终点节点类型"
-    )
-    relation_rule_type: Mapped[str] = mapped_column(
-        String(100),
-        unique=True,
-        nullable=False,
-        comment="关系规则类型(text_to_image等)",
-    )
-    is_active: Mapped[bool] = mapped_column(
-        Boolean, default=True, nullable=False, comment="规则是否启用"
-    )
-
-
-@register_model
-class GroupModel(AbstractBaseModel):
-    """组表 (group) - 画布上的节点成组"""
-
-    __tablename__ = "group"
-
-    id: Mapped[str] = mapped_column(
-        StringifiedBigInt,
-        default=generate_id,
-        primary_key=True,
-        comment="组唯一标识雪花ID",
-    )
-    canvas_id: Mapped[str] = mapped_column(
-        StringifiedBigInt, index=True, nullable=False, comment="所属画布ID（逻辑外键）"
-    )
-    created_by: Mapped[str] = mapped_column(
-        StringifiedBigInt, nullable=False, comment="创建人ID（逻辑外键）"
-    )
-    layour_type: Mapped[str] = mapped_column(
-        String(50),
-        default="horizontal",
-        nullable=True,
-        comment="布局类型(horizontal/grid)",
-    )
-    title: Mapped[str] = mapped_column(
-        String(255), default="新建组", nullable=True, comment="组名称"
-    )
-    measured: Mapped[dict] = mapped_column(JSON, nullable=False, comment="组尺寸信息")
-    position: Mapped[dict] = mapped_column(JSON, nullable=False, comment="组位置信息")
-    is_generated: Mapped[bool] = mapped_column(
-        Boolean, default=False, nullable=True, comment="是否为通过模版生成"
-    )
-
-
-# ==================== 模板、任务与日志模块 ====================
-
-
-@register_model
-class WorkflowTemplateModel(AbstractBaseModel):
-    """工作流模版表 (workflow_template)"""
-
-    __tablename__ = "workflow_template"
-
-    id: Mapped[str] = mapped_column(
-        StringifiedBigInt, default=generate_id, primary_key=True, comment="模版雪花ID"
-    )
-    name: Mapped[str] = mapped_column(String(255), nullable=False, comment="模板名称")
-    description: Mapped[Optional[str]] = mapped_column(
-        Text, nullable=True, comment="模板描述"
-    )
-    created_by: Mapped[str] = mapped_column(
-        StringifiedBigInt, nullable=False, comment="创建用户ID（逻辑外键）"
-    )
-    dag_data: Mapped[dict] = mapped_column(
-        JSON, nullable=False, comment="以DAG的形式存储画布上的节点"
-    )
-
-
-@register_model
-class TaskModel(AbstractBaseModel):
-    """任务节点执行记录表 (task)"""
-
-    __tablename__ = "task"
-
-    id: Mapped[str] = mapped_column(
-        StringifiedBigInt,
-        default=generate_id,
-        primary_key=True,
-        comment="任务唯一标识雪花ID",
-    )
-    canvas_id: Mapped[str] = mapped_column(
-        StringifiedBigInt, index=True, nullable=False, comment="所属画布ID（逻辑外键）"
-    )
-    model_params: Mapped[dict] = mapped_column(
-        JSON, nullable=False, comment="当前任务所使用的模型参数"
-    )
-    retry_count: Mapped[Optional[int]] = mapped_column(
-        Integer, default=0, nullable=True, comment="当前重试次数"
-    )
-    max_retries: Mapped[Optional[int]] = mapped_column(
-        Integer, default=3, nullable=True, comment="最大重试次数"
-    )
-    started_at: Mapped[Optional[datetime]] = mapped_column(
-        BeijingTimeZone(), nullable=True, comment="任务开始时间"
-    )
-    completed_at: Mapped[Optional[datetime]] = mapped_column(
-        BeijingTimeZone(), nullable=True, comment="任务完成时间"
-    )
-    status: Mapped[str] = mapped_column(
-        String(50),
-        default="pending",
-        nullable=False,
-        comment="状态(pending/running/success/failed)",
-    )
-    error_message: Mapped[Optional[str]] = mapped_column(
-        Text, nullable=True, comment="错误消息"
-    )
-    result: Mapped[Optional[dict]] = mapped_column(
-        JSON, nullable=True, comment="执行结果"
-    )
-
-
-@register_model
-class ActionLogModel(AbstractBaseModel):
-    """操作日志表 (action_log) - 用于重放操作或协同广播"""
-
-    __tablename__ = "action_log"
-
-    id: Mapped[str] = mapped_column(
-        StringifiedBigInt,
-        default=generate_id,
-        primary_key=True,
-        comment="操作日志雪花ID",
-    )
-    canvas_id: Mapped[str] = mapped_column(
-        StringifiedBigInt, index=True, nullable=False, comment="所属画布ID（逻辑外键）"
-    )
-    action_by: Mapped[str] = mapped_column(
-        StringifiedBigInt, index=True, nullable=False, comment="操作人ID（逻辑外键）"
-    )
-    action: Mapped[str] = mapped_column(
-        String(50), nullable=False, comment="操作类型(create/update/delete)"
-    )
-    target: Mapped[str] = mapped_column(
-        String(50), nullable=False, comment="目标类型(node/connection/group)"
-    )
-    payload: Mapped[Optional[dict]] = mapped_column(
-        JSON, nullable=True, comment="操作请求的负载数据"
-    )
+AppUser = AppUserModel
+StudentProfile = StudentProfileModel
+TeacherProfile = TeacherProfileModel
+ClassRoom = ClassRoomModel
+ClassStudent = ClassStudentModel
+StudentImportBatch = StudentImportBatchModel
+StudentImportBatchItem = StudentImportBatchItemModel
+Question = QuestionModel
+QuestionImage = QuestionImageModel
+Tag = TagModel
+QuestionTagRel = QuestionTagRelModel
+Quiz = QuizModel
+QuizClassRel = QuizClassRelModel
+QuizQuestion = QuizQuestionModel
+QuizSubmission = QuizSubmissionModel
+SubmissionAnswer = SubmissionAnswerModel
+SubmissionAnswerImage = SubmissionAnswerImageModel
+AIGradingLog = AIGradingLogModel
+AnswerReviewLog = AnswerReviewLogModel
+TypicalErrorPattern = TypicalErrorPatternModel
+AnswerTypicalErrorRel = AnswerTypicalErrorRelModel

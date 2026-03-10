@@ -26,7 +26,7 @@ from app.api.form_response.admin_response import (
 from app.auth import jwt_manager
 from app.auth.admin import admin_base  # ← 加这一行
 from app.common.enums import UserStatus
-from app.common.time_ import time_now, zone_info
+from app.common.time_ import time_now, to_naive_utc, zone_info
 from app.core import redis_client
 from app.storage import (
     AsyncSessionLocal,
@@ -100,7 +100,7 @@ class AdminService:
                 stmt = (
                     update(UserModel)
                     .where(UserModel.id == user.id)
-                    .values(last_login_at=time_now())
+                    .values(last_login_at=datetime.utcnow())
                 )
                 await session.execute(stmt)
                 await session.commit()
@@ -163,7 +163,7 @@ class AdminService:
                 stmt = (
                     update(UserModel)
                     .where(UserModel.id == user.id)
-                    .values(last_login_at=time_now())
+                    .values(last_login_at=datetime.utcnow())
                 )
                 await session.execute(stmt)
                 await session.commit()
@@ -222,7 +222,7 @@ class AdminService:
                 stmt = (
                     update(UserModel)
                     .where(UserModel.id == user.id)
-                    .values(last_login_at=time_now())
+                    .values(last_login_at=datetime.utcnow())
                 )
                 await session.execute(stmt)
                 await session.commit()
@@ -556,6 +556,9 @@ class AdminService:
         total: int | None,
     ) -> StreamingResponse | None:
         """导出系统日志到Excel文件"""
+        start_time = to_naive_utc(start_time)
+        end_time = to_naive_utc(end_time)
+
         row_number_col = (
             func.row_number()
             .over(
@@ -635,6 +638,9 @@ class AdminService:
         is_user: bool = True,
     ) -> StreamingResponse | None:
         """导出用户日志或管理日志到Excel文件"""
+        start_time = to_naive_utc(start_time)
+        end_time = to_naive_utc(end_time)
+
         filename = "用户日志.xlsx" if is_user else "管理日志.xlsx"
         sheet_name = "用户日志" if is_user else "管理日志"
 
