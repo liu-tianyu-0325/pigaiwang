@@ -30,6 +30,7 @@ class Settings(BaseSettings):
     PROJECT_PORT: int = 8000
     PROJECT_HOST: str = "0.0.0.0"
     PROJECT_NAME: str = "ai-manhua"
+    
     PROJECT_WORKERS: int = 1  # gunicorn/uvicorn worker 数量
     API_PREFIX: str = "/api/v1"
     PROJECT_DIR: str = os.getcwd()
@@ -49,7 +50,9 @@ class Settings(BaseSettings):
     S3_URL: str = "http://localhost:9000"
     S3_ACCESS_KEY: str = "minioadmin"
     S3_SECRET_KEY: str = "minioadmin"
-    S3_BUCKET_NAME: str = "ai-manhua"  # ← 新增，很重要
+    QUESTION_IMAGE_BUCKET: str = "pigaiwang-dev-question-images"
+    S3_BUCKET_NAME: str = "ai-manhua" 
+     # ← 新增，很重要
     S3_REGION: str = "us-east-1"
     S3_SECURE: bool = False  # 本地 MinIO 用 False
     S3_MAX_POOL_CONNECTIONS: int = 50
