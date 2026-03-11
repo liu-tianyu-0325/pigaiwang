@@ -1,9 +1,12 @@
 """学生测验相关API路由。"""
 
 from datetime import datetime
+from typing import Any
 
-from fastapi import APIRouter, File, Form, HTTPException, UploadFile, status
+from fastapi import APIRouter, File, Form, HTTPException, Request, UploadFile, status
+from fastapi.exceptions import RequestValidationError
 from loguru import logger
+from pydantic import ValidationError
 
 from app.api.form_response import BaseResponseModel
 from app.api.form_response.stu_quiz_response import (
@@ -19,6 +22,7 @@ from app.api.form_validation.stu_quiz_validation import (
     StuQuestionDetailRequest,
     StuQuizDetailRequest,
     StuQuizListRequest,
+    StuSubmitAnswerRequest,
     StuSubmitQuizRequest,
 )
 from app.auth import UserClaims, get_current_user_dependency
@@ -139,9 +143,10 @@ async def get_stu_question_detail(
     summary="学生提交答案（支持多图上传）",
 )
 async def submit_stu_answer(
+    request: Request,
     student_id: str | None = Form(default=None, description="学生用户ID（兼容保留，后端仍按当前登录学生处理）"),
-    quiz_id: str = Form(..., description="测验ID"),
-    question_id: str = Form(..., description="题目ID"),
+    quiz_id: str | None = Form(default=None, description="测验ID"),
+    question_id: str | None = Form(default=None, description="题目ID"),
     answer_md: str | None = Form(default=None, description="Markdown答案文本"),
     submitted_at: datetime | None = Form(default=None, description="提交时间，不传则使用当前时间"),
     duration_sec: int = Form(default=0, description="用时，单位秒"),
@@ -149,23 +154,56 @@ async def submit_stu_answer(
     current_user: UserClaims = get_current_user_dependency,
 ):
     """学生提交题目答案。"""
-    student_id = _ensure_student_identity(current_user, student_id)
+    content_type = request.headers.get("content-type", "").lower()
+    payload: dict[str, Any] = {
+        "student_id": student_id,
+        "quiz_id": quiz_id,
+        "question_id": question_id,
+        "answer_md": answer_md,
+        "submitted_at": submitted_at,
+        "duration_sec": duration_sec,
+    }
+
+    if (
+        (payload["quiz_id"] is None or payload["question_id"] is None)
+        and "application/json" in content_type
+    ):
+        json_payload = await request.json()
+        if not isinstance(json_payload, dict):
+            raise RequestValidationError(
+                [
+                    {
+                        "type": "dict_type",
+                        "loc": ("body",),
+                        "msg": "Input should be a valid dictionary",
+                        "input": json_payload,
+                    }
+                ]
+            )
+        payload.update(json_payload)
+
+    try:
+        validated_request = StuSubmitAnswerRequest.model_validate(payload)
+    except ValidationError as exc:
+        raise RequestValidationError(exc.errors()) from exc
+
+    student_id = _ensure_student_identity(current_user, validated_request.student_id)
     log = logger.bind(
         log_type="user",
         student_id=student_id,
-        quiz_id=quiz_id,
-        question_id=question_id,
+        quiz_id=validated_request.quiz_id,
+        question_id=validated_request.question_id,
     )
     log.info("学生提交答案")
     normalized_images = _normalize_upload_files(images)
     res, code, message, data = await stu_quiz_service.submit_answer(
         student_id=student_id,
-        quiz_id=quiz_id,
-        question_id=question_id,
-        answer_md=answer_md,
+        quiz_id=validated_request.quiz_id,
+        question_id=validated_request.question_id,
+        answer_md=validated_request.answer_md,
         images=normalized_images,
-        submitted_at=submitted_at,
-        duration_sec=duration_sec,
+        submitted_at=validated_request.submitted_at,
+        duration_sec=validated_request.duration_sec,
     )
     log.info(message)
     return {"res": res, "code": code, "message": message, "data": data}
