@@ -11,6 +11,7 @@ from app.storage.database_models import (
     AppUser,
     ClassRoom,
     ClassStudent,
+    ClassStudentStatus,
     GradingStatus,
     Question,
     QuestionImage,
@@ -363,7 +364,10 @@ class TEAAnalysisService:
                 ClassStudent.class_id,
                 func.count(ClassStudent.id),
             )
-            .where(ClassStudent.class_id.in_(class_ids))
+            .where(
+                ClassStudent.class_id.in_(class_ids),
+                ClassStudent.join_status == ClassStudentStatus.active,
+            )
             .group_by(ClassStudent.class_id)
         )
         result = await session.execute(stmt)
@@ -555,23 +559,52 @@ class TEAAnalysisService:
         data: list[dict[str, Any]] = []
         for question_obj in question_rows:
             question_id = int(question_obj.id)
-            answer_stmt = (
-                select(SubmissionAnswer)
-                .join(QuizSubmission, QuizSubmission.id == SubmissionAnswer.submission_id)
-                .where(
-                    QuizSubmission.quiz_id.in_(quiz_ids),
-                    QuizSubmission.status.in_(self._formal_submission_statuses()),
-                    SubmissionAnswer.question_id == question_id,
-                )
+            question_quiz_ids_result = await session.execute(
+                select(QuizQuestion.quiz_id).where(QuizQuestion.question_id == question_id)
             )
-            answer_result = await session.execute(answer_stmt)
-            answer_rows = answer_result.scalars().all()
+            question_quiz_ids = [
+                int(item)
+                for item in question_quiz_ids_result.scalars().all()
+                if int(item) in quiz_ids
+            ]
+            if not question_quiz_ids:
+                continue
 
-            total_count = len(answer_rows)
+            submission_rows = (
+                await session.execute(
+                    select(QuizSubmission.id)
+                    .where(
+                        QuizSubmission.quiz_id.in_(question_quiz_ids),
+                        QuizSubmission.status.in_(self._formal_submission_statuses()),
+                    )
+                )
+            ).scalars().all()
+            submission_ids = [int(item) for item in submission_rows]
+            total_count = len(submission_ids)
             correct_count = 0
-            for answer_obj in answer_rows:
-                if self._map_result_status(getattr(answer_obj, result_status_col.key, None)) == "correct":
-                    correct_count += 1
+            if submission_ids:
+                answer_rows = (
+                    await session.execute(
+                        select(SubmissionAnswer).where(
+                            SubmissionAnswer.submission_id.in_(submission_ids),
+                            SubmissionAnswer.question_id == question_id,
+                        )
+                    )
+                ).scalars().all()
+
+                answer_by_submission_id = {
+                    int(getattr(answer_obj, "submission_id", 0)): answer_obj
+                    for answer_obj in answer_rows
+                }
+
+                for submission_id in submission_ids:
+                    answer_obj = answer_by_submission_id.get(submission_id)
+                    if answer_obj is None:
+                        continue
+                    if self._map_result_status(
+                        getattr(answer_obj, result_status_col.key, None)
+                    ) == "correct":
+                        correct_count += 1
 
             accuracy_rate = 0.0
             if total_count > 0:
@@ -857,34 +890,60 @@ class TEAAnalysisService:
                 question_stmt = select(Question).where(Question.id.in_(question_ids)).order_by(Question.id.asc())
                 question_result = await session.execute(question_stmt)
                 question_rows = question_result.scalars().all()
+                total_student_count = int(
+                    (await self._get_class_student_count_map(session, [class_id])).get(class_id, 0)
+                )
+                submission_rows = (
+                    await session.execute(
+                        select(QuizSubmission.id)
+                        .where(
+                            QuizSubmission.quiz_id == quiz_id,
+                            QuizSubmission.class_id == class_id,
+                            QuizSubmission.status.in_(self._formal_submission_statuses()),
+                        )
+                    )
+                ).scalars().all()
+                submission_ids = [int(item) for item in submission_rows]
 
                 data: list[dict[str, Any]] = []
                 for question_obj in question_rows:
                     question_id = int(question_obj.id)
 
-                    answer_stmt = (
-                        select(SubmissionAnswer)
-                        .join(QuizSubmission, SubmissionAnswer.submission_id == QuizSubmission.id)
-                        .where(
-                            QuizSubmission.quiz_id == quiz_id,
-                            QuizSubmission.class_id == class_id,
-                            QuizSubmission.status.in_(self._formal_submission_statuses()),
-                            SubmissionAnswer.question_id == question_id,
-                        )
-                    )
-                    answer_result = await session.execute(answer_stmt)
-                    answer_rows = answer_result.scalars().all()
+                    answer_rows = []
+                    if submission_ids:
+                        answer_rows = (
+                            await session.execute(
+                                select(SubmissionAnswer).where(
+                                    SubmissionAnswer.submission_id.in_(submission_ids),
+                                    SubmissionAnswer.question_id == question_id,
+                                )
+                            )
+                        ).scalars().all()
 
-                    answer_count = len(answer_rows)
+                    answer_by_submission_id = {
+                        int(getattr(answer_obj, "submission_id", 0)): answer_obj
+                        for answer_obj in answer_rows
+                    }
+
+                    answer_count = len(submission_ids)
                     correct_count = 0
+                    wrong_count = 0
+                    unanswered_count = max(total_student_count - len(submission_ids), 0)
                     typical_error_count = 0
 
-                    for answer_obj in answer_rows:
+                    for submission_id in submission_ids:
+                        answer_obj = answer_by_submission_id.get(submission_id)
+                        if answer_obj is None:
+                            wrong_count += 1
+                            continue
+
                         result_value = self._map_result_status(
                             getattr(answer_obj, "result_status", None)
                         )
                         if result_value == "correct":
                             correct_count += 1
+                        else:
+                            wrong_count += 1
 
                         rel_count = await session.scalar(
                             select(func.count(AnswerTypicalErrorRel.id)).where(
@@ -906,6 +965,8 @@ class TEAAnalysisService:
                             "question_image_urls": await self._get_question_image_urls(session, question_id),
                             "answer_count": answer_count,
                             "correct_count": correct_count,
+                            "wrong_count": wrong_count,
+                            "unanswered_count": unanswered_count,
                             "accuracy_rate": accuracy_rate,
                             "typical_error_rate": typical_error_rate,
                             "correct_answer_samples": await self._get_correct_answer_samples(
@@ -946,7 +1007,10 @@ class TEAAnalysisService:
                     select(AppUser, StudentProfile, ClassStudent)
                     .join(ClassStudent, ClassStudent.student_id == AppUser.id)
                     .join(StudentProfile, StudentProfile.user_id == AppUser.id)
-                    .where(ClassStudent.class_id == class_id)
+                    .where(
+                        ClassStudent.class_id == class_id,
+                        ClassStudent.join_status == ClassStudentStatus.active,
+                    )
                     .order_by(AppUser.id.desc())
                 )
                 student_result = await session.execute(student_stmt)
@@ -955,7 +1019,6 @@ class TEAAnalysisService:
                 items: list[dict[str, Any]] = []
                 for user_obj, profile_obj, _class_student_obj in student_rows:
                     student_id = int(user_obj.id)
-
                     submission_stmt = (
                         select(QuizSubmission)
                         .where(
@@ -986,7 +1049,6 @@ class TEAAnalysisService:
                         submission_status = self._map_submission_status(
                             getattr(submission_obj, "status", None)
                         )
-
                         answer_stmt = select(SubmissionAnswer).where(
                             SubmissionAnswer.submission_id == submission_id
                         )
