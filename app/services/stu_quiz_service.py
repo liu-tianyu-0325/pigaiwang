@@ -47,6 +47,14 @@ class StuQuizService:
         SubmissionStatus.reviewed,
     }
 
+    @staticmethod
+    def _formal_submission_statuses() -> tuple[SubmissionStatus, ...]:
+        return (
+            SubmissionStatus.submitted,
+            SubmissionStatus.grading,
+            SubmissionStatus.reviewed,
+        )
+
     def _get_answer_bucket_name(self) -> str:
         candidate_attr_names = [
             "QUESTION_IMAGE_BUCKET",
@@ -231,6 +239,72 @@ class StuQuizService:
         if row is None:
             return None, None
         return row[0], row[1]
+
+    async def _sync_quiz_class_rel_stats(
+        self,
+        session,
+        *,
+        quiz_id: int,
+        class_id: int,
+    ) -> None:
+        target_student_count = int(
+            (
+                await session.execute(
+                    select(func.count(ClassStudent.id)).where(
+                        ClassStudent.class_id == class_id,
+                        ClassStudent.join_status == ClassStudentStatus.active,
+                    )
+                )
+            ).scalar_one()
+            or 0
+        )
+        submitted_student_count = int(
+            (
+                await session.execute(
+                    select(func.count(func.distinct(QuizSubmission.student_id))).where(
+                        QuizSubmission.quiz_id == quiz_id,
+                        QuizSubmission.class_id == class_id,
+                        QuizSubmission.status.in_(self._formal_submission_statuses()),
+                    )
+                )
+            ).scalar_one()
+            or 0
+        )
+        submit_rate = (
+            round(submitted_student_count / target_student_count * 100, 2)
+            if target_student_count > 0
+            else 0.0
+        )
+
+        avg_row = (
+            await session.execute(
+                select(
+                    func.coalesce(func.avg(QuizSubmission.final_score), 0.0),
+                    func.coalesce(func.avg(QuizSubmission.accuracy_rate), 0.0),
+                ).where(
+                    QuizSubmission.quiz_id == quiz_id,
+                    QuizSubmission.class_id == class_id,
+                    QuizSubmission.status.in_(self._formal_submission_statuses()),
+                )
+            )
+        ).one()
+
+        quiz_class_rel = (
+            await session.execute(
+                select(QuizClassRel).where(
+                    QuizClassRel.quiz_id == quiz_id,
+                    QuizClassRel.class_id == class_id,
+                )
+            )
+        ).scalar_one_or_none()
+        if quiz_class_rel is None:
+            return
+
+        quiz_class_rel.target_student_count = target_student_count
+        quiz_class_rel.submitted_student_count = submitted_student_count
+        quiz_class_rel.submit_rate = submit_rate
+        quiz_class_rel.avg_score = round(float(avg_row[0] or 0), 2)
+        quiz_class_rel.avg_accuracy_rate = round(float(avg_row[1] or 0), 2)
 
     async def get_quiz_list(
         self,
@@ -679,6 +753,12 @@ class StuQuizService:
                     "submission_status": response_submission_status,
                     "submitted_at": submit_time,
                 }
+                if submission.status in self._formal_submission_statuses():
+                    await self._sync_quiz_class_rel_stats(
+                        session,
+                        quiz_id=int(quiz_id),
+                        class_id=int(class_id),
+                    )
                 await session.commit()
             except Exception as e:
                 await session.rollback()
@@ -817,6 +897,11 @@ class StuQuizService:
                     "grading_status": grading_status_value,
                     "submitted_at": submit_time,
                 }
+                await self._sync_quiz_class_rel_stats(
+                    session,
+                    quiz_id=int(quiz_id),
+                    class_id=int(class_id),
+                )
                 await session.commit()
 
                 if pending_answer_count > 0:

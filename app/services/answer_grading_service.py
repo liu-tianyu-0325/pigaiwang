@@ -14,9 +14,12 @@ from app.storage import AsyncSessionLocal, GradingStatus, ResultStatus, Submissi
 from app.storage.database_models import (
     AIGradingLog,
     AnswerTypicalErrorRel,
+    ClassStudent,
+    ClassStudentStatus,
     Question,
     QuestionImage,
     Quiz,
+    QuizClassRel,
     QuizQuestion,
     QuizSubmission,
     SubmissionAnswer,
@@ -326,6 +329,72 @@ class AnswerGradingService:
                 submission.status = SubmissionStatus.reviewed
             else:
                 submission.status = SubmissionStatus.grading
+
+            quiz_class_rel = (
+                await session.execute(
+                    select(QuizClassRel).where(
+                        QuizClassRel.quiz_id == submission.quiz_id,
+                        QuizClassRel.class_id == submission.class_id,
+                    )
+                )
+            ).scalar_one_or_none()
+            if quiz_class_rel is not None:
+                target_student_count = int(
+                    (
+                        await session.execute(
+                            select(func.count(ClassStudent.id)).where(
+                                ClassStudent.class_id == submission.class_id,
+                                ClassStudent.join_status == ClassStudentStatus.active,
+                            )
+                        )
+                    ).scalar_one()
+                    or 0
+                )
+                submitted_student_count = int(
+                    (
+                        await session.execute(
+                            select(func.count(func.distinct(QuizSubmission.student_id))).where(
+                                QuizSubmission.quiz_id == submission.quiz_id,
+                                QuizSubmission.class_id == submission.class_id,
+                                QuizSubmission.status.in_(
+                                    [
+                                        SubmissionStatus.submitted,
+                                        SubmissionStatus.grading,
+                                        SubmissionStatus.reviewed,
+                                    ]
+                                ),
+                            )
+                        )
+                    ).scalar_one()
+                    or 0
+                )
+                avg_row = (
+                    await session.execute(
+                        select(
+                            func.coalesce(func.avg(QuizSubmission.final_score), 0.0),
+                            func.coalesce(func.avg(QuizSubmission.accuracy_rate), 0.0),
+                        ).where(
+                            QuizSubmission.quiz_id == submission.quiz_id,
+                            QuizSubmission.class_id == submission.class_id,
+                            QuizSubmission.status.in_(
+                                [
+                                    SubmissionStatus.submitted,
+                                    SubmissionStatus.grading,
+                                    SubmissionStatus.reviewed,
+                                ]
+                            ),
+                        )
+                    )
+                ).one()
+                quiz_class_rel.target_student_count = target_student_count
+                quiz_class_rel.submitted_student_count = submitted_student_count
+                quiz_class_rel.submit_rate = (
+                    round(submitted_student_count / target_student_count * 100, 2)
+                    if target_student_count > 0
+                    else 0.0
+                )
+                quiz_class_rel.avg_score = round(float(avg_row[0] or 0), 2)
+                quiz_class_rel.avg_accuracy_rate = round(float(avg_row[1] or 0), 2)
 
             await session.commit()
 

@@ -9,6 +9,7 @@ from app.storage.base import AsyncSessionLocal
 from app.storage.database_models import (
     ClassRoom,
     ClassStudent,
+    ClassStudentStatus,
     Question,
     Quiz,
     QuizClassRel,
@@ -157,11 +158,7 @@ class TEADashboardService:
                         Quiz.id,
                         Quiz.quiz_name,
                         Quiz.status,
-                        func.coalesce(func.avg(QuizClassRel.submit_rate), 0).label(
-                            "submit_rate"
-                        ),
                     )
-                    .outerjoin(QuizClassRel, QuizClassRel.quiz_id == Quiz.id)
                     .where(
                         and_(
                             Quiz.creator_id == teacher_id,
@@ -178,6 +175,56 @@ class TEADashboardService:
 
                 recent_quizzes: list[dict] = []
                 for row in recent_quiz_rows:
+                    class_count_rows = await session.execute(
+                        select(
+                            QuizClassRel.class_id,
+                            func.count(ClassStudent.id).label("student_count"),
+                        )
+                        .select_from(QuizClassRel)
+                        .join(ClassRoom, ClassRoom.id == QuizClassRel.class_id)
+                        .outerjoin(
+                            ClassStudent,
+                            and_(
+                                ClassStudent.class_id == QuizClassRel.class_id,
+                                ClassStudent.join_status == ClassStudentStatus.active,
+                            ),
+                        )
+                        .where(QuizClassRel.quiz_id == row.id)
+                        .group_by(QuizClassRel.class_id)
+                    )
+                    class_count_map = {
+                        int(class_id): int(student_count or 0)
+                        for class_id, student_count in class_count_rows.all()
+                        if class_id is not None
+                    }
+
+                    submitted_count_rows = await session.execute(
+                        select(
+                            QuizSubmission.class_id,
+                            func.count(func.distinct(QuizSubmission.student_id)).label(
+                                "submitted_count"
+                            ),
+                        )
+                        .where(
+                            QuizSubmission.quiz_id == row.id,
+                            QuizSubmission.status.in_(self._formal_submission_statuses()),
+                        )
+                        .group_by(QuizSubmission.class_id)
+                    )
+                    submitted_count_map = {
+                        int(class_id): int(submitted_count or 0)
+                        for class_id, submitted_count in submitted_count_rows.all()
+                        if class_id is not None
+                    }
+
+                    total_student_count = sum(class_count_map.values())
+                    submitted_student_count = sum(submitted_count_map.values())
+                    submit_rate = (
+                        round(submitted_student_count / total_student_count * 100, 2)
+                        if total_student_count > 0
+                        else 0.0
+                    )
+
                     class_name_stmt = (
                         select(ClassRoom.class_name)
                         .select_from(QuizClassRel)
@@ -192,7 +239,7 @@ class TEADashboardService:
                             "quiz_id": row.id,
                             "quiz_name": row.quiz_name,
                             "class_names": class_names,
-                            "submit_rate": float(row.submit_rate or 0),
+                            "submit_rate": submit_rate,
                             "status": row.status.value if hasattr(row.status, "value") else str(row.status),
                         }
                     )
