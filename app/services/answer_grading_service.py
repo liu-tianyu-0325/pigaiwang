@@ -48,11 +48,28 @@ class AnswerGradingService:
         task = asyncio.create_task(self.grade_answer(answer_id))
         task.add_done_callback(self._handle_background_result)
 
-    def _handle_background_result(self, task: asyncio.Task[tuple[bool, str]]) -> None:
+    def schedule_grade_submission(self, submission_id: int) -> None:
+        """异步调度整份测验的批改任务。"""
+        task = asyncio.create_task(self.grade_submission(submission_id))
+        task.add_done_callback(self._handle_background_result)
+
+    def _handle_background_result(self, task: asyncio.Task) -> None:
         try:
             task.result()
         except Exception:
             logger.exception("后台 AI 批改任务执行失败")
+
+    async def _load_submission_answer_ids(self, submission_id: int) -> list[int]:
+        async with AsyncSessionLocal() as session:
+            rows = await session.execute(
+                select(SubmissionAnswer.id)
+                .where(
+                    SubmissionAnswer.submission_id == submission_id,
+                    SubmissionAnswer.is_answered.is_(True),
+                )
+                .order_by(SubmissionAnswer.sort_no.asc(), SubmissionAnswer.id.asc())
+            )
+            return list(rows.scalars().all())
 
     async def _load_context(self, answer_id: int) -> AnswerGradingContext | None:
         async with AsyncSessionLocal() as session:
@@ -176,6 +193,14 @@ class AnswerGradingService:
             if submission is None:
                 return
 
+            quiz_question_total_score = (
+                await session.execute(
+                    select(func.coalesce(func.sum(QuizQuestion.score), 0.0)).where(
+                        QuizQuestion.quiz_id == submission.quiz_id
+                    )
+                )
+            ).scalar_one()
+
             total_row = (
                 await session.execute(
                     select(
@@ -208,7 +233,14 @@ class AnswerGradingService:
                 total_row
             )
             question_count = submission.question_count or 0
-            submission.final_score = float(final_score or 0)
+            calculated_final_score = float(final_score or 0)
+            max_total_score = float(quiz_question_total_score or 0)
+            if (
+                submission.submitted_at is not None
+                and calculated_final_score < 10
+            ):
+                calculated_final_score = min(10.0, max_total_score) if max_total_score > 0 else 10.0
+            submission.final_score = calculated_final_score
             submission.total_duration_sec = int(total_duration or 0)
             submission.correct_count = int(correct_count or 0)
             submission.answered_count = int(answered_count or 0)
@@ -218,14 +250,34 @@ class AnswerGradingService:
                 else 0
             )
 
-            if submission.answered_count < question_count:
+            if submission.submitted_at is None and submission.answered_count < question_count:
                 submission.status = SubmissionStatus.in_progress
-            elif graded_count >= question_count and question_count > 0:
+            elif graded_count >= submission.answered_count:
                 submission.status = SubmissionStatus.reviewed
             else:
                 submission.status = SubmissionStatus.grading
 
             await session.commit()
+
+    async def grade_submission(self, submission_id: int) -> tuple[bool, str]:
+        """执行整份测验的 AI 批改。"""
+        answer_ids = await self._load_submission_answer_ids(submission_id)
+        if not answer_ids:
+            await self._refresh_submission_summary(submission_id)
+            return False, "当前测验暂无可批改答案"
+
+        success_count = 0
+        failure_messages: list[str] = []
+        for answer_id in answer_ids:
+            success, message = await self.grade_answer(answer_id)
+            if success:
+                success_count += 1
+                continue
+            failure_messages.append(f"answer_id={answer_id}: {message}")
+
+        if failure_messages:
+            return False, "; ".join(failure_messages)
+        return True, f"AI 已完成 {success_count} 道题批改"
 
     async def _apply_grading_result(
         self,

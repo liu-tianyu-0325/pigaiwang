@@ -53,25 +53,48 @@ class StuQuizService:
     def _build_answer_grading_status(
         self,
         answer: SubmissionAnswer | None,
+        submission: QuizSubmission | None = None,
     ) -> str:
+        if submission is not None and submission.status in {
+            SubmissionStatus.submitted,
+            SubmissionStatus.grading,
+        }:
+            return "批改中"
+        if submission is not None and submission.status == SubmissionStatus.reviewed:
+            return "已批改"
         if answer is None or not answer.is_answered:
-            return "未作答"
+            return "未提交未批改"
         if answer.grading_status == GradingStatus.graded:
             return "已批改"
-        if answer.grading_status == GradingStatus.grading:
-            return "批改中"
-        return "待批改"
+        return "已提交未批改"
 
-    def _build_result_status_text(self, answer: SubmissionAnswer | None) -> str:
+    def _build_result_status_text(
+        self,
+        answer: SubmissionAnswer | None,
+        submission: QuizSubmission | None = None,
+    ) -> str:
+        if submission is None or submission.submitted_at is None:
+            if answer is None or not answer.is_answered:
+                return "未提交"
+            if answer.grading_status == GradingStatus.graded:
+                return "正确" if answer.result_status == ResultStatus.correct else "错误"
+            return "已提交"
+
         if answer is None or not answer.is_answered:
-            return "未作答"
+            if submission.status == SubmissionStatus.reviewed:
+                return "错误"
+            return "已提交"
+
+        if answer.grading_status != GradingStatus.graded:
+            return "已提交"
+
         mapping = {
             ResultStatus.correct: "正确",
             ResultStatus.wrong: "错误",
-            ResultStatus.partial: "部分正确",
-            ResultStatus.unanswered: "未作答",
+            ResultStatus.partial: "错误",
+            ResultStatus.unanswered: "错误",
         }
-        return mapping.get(answer.result_status, "未作答")
+        return mapping.get(answer.result_status, "错误")
 
     async def _get_student_class_context(
         self,
@@ -215,8 +238,12 @@ class StuQuizService:
                     {
                         "question_id": str(question.id),
                         "question": question.content_md,
-                        "grading_status": self._build_answer_grading_status(answer),
-                        "result_status": self._build_result_status_text(answer),
+                        "grading_status": self._build_answer_grading_status(
+                            answer, submission
+                        ),
+                        "result_status": self._build_result_status_text(
+                            answer, submission
+                        ),
                         "is_answered": bool(answer.is_answered) if answer else False,
                     }
                     for _, question, answer in rows
@@ -274,6 +301,16 @@ class StuQuizService:
                     stmt = stmt.where(SubmissionAnswer.quiz_id == int(quiz_id))
                 row = (await session.execute(stmt)).first()
                 answer = row[0] if row else None
+                submission = row[1] if row else None
+                if submission is None and quiz_id is not None:
+                    submission = (
+                        await session.execute(
+                            select(QuizSubmission).where(
+                                QuizSubmission.quiz_id == int(quiz_id),
+                                QuizSubmission.student_id == int(student_id),
+                            )
+                        )
+                    ).scalar_one_or_none()
 
                 image_urls: list[str] = []
                 typical_errors: list[dict] = []
@@ -336,8 +373,12 @@ class StuQuizService:
                         "final_score": answer.final_score if answer else 0,
                         "ai_feedback": answer.ai_feedback if answer else None,
                         "teacher_feedback": answer.teacher_feedback if answer else None,
-                        "grading_status": self._build_answer_grading_status(answer),
-                        "result_status": self._build_result_status_text(answer),
+                        "grading_status": self._build_answer_grading_status(
+                            answer, submission
+                        ),
+                        "result_status": self._build_result_status_text(
+                            answer, submission
+                        ),
                         "is_answered": bool(answer.is_answered) if answer else False,
                         "image_urls": image_urls,
                         "typical_errors": typical_errors,
@@ -440,12 +481,10 @@ class StuQuizService:
 
                 answer.answer_md = answer_md
                 answer.is_answered = bool(answer_md or image_urls)
-                answer.grading_status = (
-                    GradingStatus.grading
-                    if answer.is_answered
-                    else GradingStatus.pending
-                )
+                answer.grading_status = GradingStatus.pending
                 answer.result_status = ResultStatus.unanswered
+                answer.ai_score = 0
+                answer.final_score = 0
                 answer.duration_sec = duration_sec
                 answer.submitted_at = submit_time
                 answer.ai_feedback = None
@@ -455,6 +494,14 @@ class StuQuizService:
                     delete(SubmissionAnswerImage).where(
                         SubmissionAnswerImage.answer_id == answer.id
                     )
+                )
+                await session.execute(
+                    delete(AnswerTypicalErrorRel).where(
+                        AnswerTypicalErrorRel.answer_id == answer.id
+                    )
+                )
+                await session.execute(
+                    delete(AIGradingLog).where(AIGradingLog.answer_id == answer.id)
                 )
                 for index, image_url in enumerate(image_urls, start=1):
                     session.add(
@@ -482,23 +529,141 @@ class StuQuizService:
                     submission.status = SubmissionStatus.in_progress
 
                 answer_id_value = int(answer.id)
-                should_trigger_ai = bool(answer.is_answered)
                 response_data = {
                     "submission_id": str(submission.id),
                     "answer_id": str(answer_id_value),
                     "answered_count": answered_count,
-                    "grading_status": self._build_answer_grading_status(answer),
+                    "grading_status": self._build_answer_grading_status(
+                        answer, submission
+                    ),
                     "submission_status": submission.status.value,
                     "submitted_at": submit_time,
                 }
                 await session.commit()
-                if should_trigger_ai:
+                return True, status.HTTP_200_OK, "提交成功", response_data
+            except Exception as e:
+                await session.rollback()
+                return (
+                    False,
+                    status.HTTP_500_INTERNAL_SERVER_ERROR,
+                    f"操作失败，请稍后重试: {e}",
+                    None,
+                )
+
+    async def submit_quiz(
+        self,
+        student_id: str,
+        quiz_id: str,
+        submitted_at: datetime | None,
+    ) -> tuple[bool, int, str, dict | None]:
+        """学生提交整份测验，并自动触发 AI 批改。"""
+        submit_time = to_naive_utc(submitted_at) or datetime.utcnow()
+        async with AsyncSessionLocal() as session:
+            try:
+                quiz = await session.get(Quiz, int(quiz_id))
+                if quiz is None:
+                    return False, status.HTTP_404_NOT_FOUND, "测验不存在", None
+
+                class_id, _ = await self._get_student_class_context(
+                    session, int(student_id), int(quiz_id)
+                )
+                if class_id is None:
+                    return (
+                        False,
+                        status.HTTP_400_BAD_REQUEST,
+                        "学生未加入该测验对应班级",
+                        None,
+                    )
+
+                submission = (
+                    await session.execute(
+                        select(QuizSubmission).where(
+                            QuizSubmission.quiz_id == int(quiz_id),
+                            QuizSubmission.student_id == int(student_id),
+                        )
+                    )
+                ).scalar_one_or_none()
+                if submission is None:
+                    submission = QuizSubmission(
+                        quiz_id=int(quiz_id),
+                        class_id=class_id,
+                        student_id=int(student_id),
+                        status=SubmissionStatus.submitted,
+                        question_count=quiz.question_count,
+                        started_at=submit_time,
+                    )
+                    session.add(submission)
+                    await session.flush()
+
+                answered_count = (
+                    await session.execute(
+                        select(func.count(SubmissionAnswer.id)).where(
+                            SubmissionAnswer.submission_id == submission.id,
+                            SubmissionAnswer.is_answered.is_(True),
+                        )
+                    )
+                ).scalar_one()
+
+                submission.question_count = quiz.question_count
+                submission.answered_count = int(answered_count or 0)
+                submission.status = (
+                    SubmissionStatus.grading
+                    if submission.answered_count > 0
+                    else SubmissionStatus.submitted
+                )
+                submission.submitted_at = submit_time
+                if submission.started_at is None:
+                    submission.started_at = submit_time
+
+                if submission.answered_count > 0:
+                    answered_rows = (
+                        await session.execute(
+                            select(SubmissionAnswer).where(
+                                SubmissionAnswer.submission_id == submission.id,
+                                SubmissionAnswer.is_answered.is_(True),
+                            )
+                        )
+                    ).scalars().all()
+                    for answer in answered_rows:
+                        answer.grading_status = GradingStatus.grading
+
+                submission_id_value = int(submission.id)
+                answered_count_value = int(submission.answered_count or 0)
+                question_count_value = int(submission.question_count or 0)
+                submission_status_value = submission.status.value
+                grading_status_value = (
+                    "批改中" if answered_count_value > 0 else "无需批改"
+                )
+
+                response_data = {
+                    "submission_id": str(submission_id_value),
+                    "answered_count": answered_count_value,
+                    "question_count": question_count_value,
+                    "submission_status": submission_status_value,
+                    "grading_status": grading_status_value,
+                    "submitted_at": submit_time,
+                }
+                await session.commit()
+
+                if answered_count_value > 0:
                     try:
                         get_running_loop()
-                        answer_grading_service.schedule_grade_answer(answer_id_value)
+                        answer_grading_service.schedule_grade_submission(submission_id_value)
                     except RuntimeError:
                         logger.warning("当前上下文无事件循环，未能自动调度 AI 批改")
-                return True, status.HTTP_200_OK, "提交成功", response_data
+                    return (
+                        True,
+                        status.HTTP_200_OK,
+                        "测验提交成功，已开始自动批改",
+                        response_data,
+                    )
+
+                return (
+                    True,
+                    status.HTTP_200_OK,
+                    "测验提交成功，当前暂无已作答题目可批改",
+                    response_data,
+                )
             except Exception as e:
                 await session.rollback()
                 return (
@@ -549,7 +714,7 @@ class StuQuizService:
                     {
                         "answer_id": str(answer_entity.id),
                         "grading_status": self._build_answer_grading_status(
-                            answer_entity
+                            answer_entity, answer[1]
                         ),
                     },
                 )
@@ -628,8 +793,12 @@ class StuQuizService:
                         "my_answer": answer.answer_md,
                         "image_urls": image_urls,
                         "submitted_at": answer.submitted_at,
-                        "grading_status": self._build_answer_grading_status(answer),
-                        "result_status": self._build_result_status_text(answer),
+                        "grading_status": self._build_answer_grading_status(
+                            answer, row[1]
+                        ),
+                        "result_status": self._build_result_status_text(
+                            answer, row[1]
+                        ),
                         "ai_score": answer.ai_score,
                         "final_score": answer.final_score,
                         "ai_feedback": answer.ai_feedback,

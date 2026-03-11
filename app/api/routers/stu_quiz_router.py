@@ -10,6 +10,7 @@ from app.api.form_response.stu_quiz_response import (
     StuQuizDetailResponseModel,
     StuQuizListResponseModel,
     StuSubmitAnswerResponseModel,
+    StuSubmitQuizResponseModel,
     StuTriggerAnswerGradingResponseModel,
 )
 from app.api.form_validation.stu_quiz_validation import (
@@ -18,6 +19,7 @@ from app.api.form_validation.stu_quiz_validation import (
     StuQuizDetailRequest,
     StuQuizListRequest,
     StuSubmitAnswerRequest,
+    StuSubmitQuizRequest,
     StuTriggerAnswerGradingRequest,
 )
 from app.services.stu_quiz_service import stu_quiz_service
@@ -99,6 +101,26 @@ async def submit_stu_answer(request: StuSubmitAnswerRequest):
     )
     log.info("学生提交答案")
     res, code, message, data = await stu_quiz_service.submit_answer(
+        **request.model_dump()
+    )
+    log.info(message)
+    return {"res": res, "code": code, "message": message, "data": data}
+
+
+@router.post(
+    "/submit",
+    response_model=BaseResponseModel[StuSubmitQuizResponseModel],
+    summary="学生提交测验",
+)
+async def submit_stu_quiz(request: StuSubmitQuizRequest):
+    """学生提交整份测验，并自动触发 AI 批改。"""
+    log = logger.bind(
+        log_type="user",
+        student_id=request.student_id,
+        quiz_id=request.quiz_id,
+    )
+    log.info("学生提交测验")
+    res, code, message, data = await stu_quiz_service.submit_quiz(
         **request.model_dump()
     )
     log.info(message)

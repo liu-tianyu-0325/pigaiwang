@@ -11,6 +11,7 @@ from app.storage.database_models import (
     AppUser,
     ClassRoom,
     ClassStudent,
+    GradingStatus,
     Question,
     Quiz,
     QuizClassRel,
@@ -18,6 +19,7 @@ from app.storage.database_models import (
     QuizSubmission,
     StudentProfile,
     SubmissionAnswer,
+    SubmissionStatus,
 )
 
 
@@ -57,8 +59,50 @@ class TEAAnalysisService:
         if raw in {"wrong", "partial"}:
             return "wrong"
         if raw in {"unanswered", "", "none"}:
-            return "unanswered"
+            return "wrong"
         return raw
+
+    def _map_submission_status(self, value: Any) -> str:
+        raw = self._enum_to_str(value)
+        return raw or "not_submitted"
+
+    def _map_grading_status(self, value: Any) -> str:
+        raw = self._enum_to_str(value)
+        return raw or "pending"
+
+    def _build_list_result_status(
+        self,
+        *,
+        submission_status: str,
+        answer_obj: Any | None,
+    ) -> str:
+        if submission_status == "not_submitted":
+            return "unanswered"
+        if answer_obj is None:
+            return "wrong"
+        return self._map_result_status(getattr(answer_obj, "result_status", None))
+
+    def _build_list_grading_status(
+        self,
+        *,
+        submission_status: str,
+        answer_obj: Any | None,
+    ) -> str:
+        if submission_status == "not_submitted":
+            return "pending"
+        if answer_obj is None:
+            if submission_status == "reviewed":
+                return "graded"
+            return "grading"
+        return self._map_grading_status(getattr(answer_obj, "grading_status", None))
+
+    @staticmethod
+    def _formal_submission_statuses() -> tuple[SubmissionStatus, ...]:
+        return (
+            SubmissionStatus.submitted,
+            SubmissionStatus.grading,
+            SubmissionStatus.reviewed,
+        )
 
     def _get_quiz_name(self, quiz_obj: Any) -> str:
         value = self._pick_attr(quiz_obj, "quiz_name", "name", "title")
@@ -190,6 +234,7 @@ class TEAAnalysisService:
                 and_(
                     QuizSubmission.quiz_id == quiz_id,
                     class_id_col.in_(class_ids),
+                    QuizSubmission.status.in_(self._formal_submission_statuses()),
                 )
             )
             .group_by(class_id_col)
@@ -246,7 +291,8 @@ class TEAAnalysisService:
         class_id: int | None = None,
     ) -> float:
         stmt = select(func.coalesce(func.avg(QuizSubmission.final_score), 0)).where(
-            QuizSubmission.quiz_id == quiz_id
+            QuizSubmission.quiz_id == quiz_id,
+            QuizSubmission.status.in_(self._formal_submission_statuses()),
         )
         if class_id is not None:
             stmt = stmt.where(QuizSubmission.class_id == class_id)
@@ -739,6 +785,7 @@ class TEAAnalysisService:
                             QuizSubmission.quiz_id == quiz_id,
                             QuizSubmission.class_id == class_id,
                             QuizSubmission.student_id == student_id,
+                            QuizSubmission.status.in_(self._formal_submission_statuses()),
                         )
                         .order_by(QuizSubmission.id.desc())
                     )
@@ -750,10 +797,18 @@ class TEAAnalysisService:
                     submitted_at = None
                     duration_sec = 0
                     submission_id = None
+                    submission_status = "not_submitted"
+                    grading_status = "not_submitted"
+                    ai_score = 0.0
+                    final_score = 0.0
+                    ai_feedback = None
 
                     if submission_obj is not None:
                         submission_id = int(submission_obj.id)
                         submitted_at = getattr(submission_obj, "submitted_at", None)
+                        submission_status = self._map_submission_status(
+                            getattr(submission_obj, "status", None)
+                        )
 
                         answer_stmt = select(SubmissionAnswer).where(
                             SubmissionAnswer.submission_id == submission_id
@@ -764,12 +819,20 @@ class TEAAnalysisService:
                         answer_stmt = answer_stmt.order_by(SubmissionAnswer.id.desc())
                         answer_result = await session.execute(answer_stmt)
                         answer_obj = answer_result.scalars().first()
+                        grading_status = self._build_list_grading_status(
+                            submission_status=submission_status,
+                            answer_obj=answer_obj,
+                        )
 
                         if answer_obj is not None:
-                            result_value = self._map_result_status(
-                                getattr(answer_obj, "result_status", None)
+                            result_value = self._build_list_result_status(
+                                submission_status=submission_status,
+                                answer_obj=answer_obj,
                             )
                             duration_sec = int(getattr(answer_obj, "duration_sec", 0) or 0)
+                            ai_score = float(getattr(answer_obj, "ai_score", 0) or 0)
+                            final_score = float(getattr(answer_obj, "final_score", 0) or 0)
+                            ai_feedback = getattr(answer_obj, "ai_feedback", None)
 
                             rel_count = await session.scalar(
                                 select(func.count(AnswerTypicalErrorRel.id)).where(
@@ -777,6 +840,11 @@ class TEAAnalysisService:
                                 )
                             )
                             is_typical_error = int(rel_count or 0) > 0
+                        else:
+                            result_value = self._build_list_result_status(
+                                submission_status=submission_status,
+                                answer_obj=None,
+                            )
 
                     items.append(
                         {
@@ -784,7 +852,12 @@ class TEAAnalysisService:
                             "student_id": student_id,
                             "student_no": str(getattr(profile_obj, "student_no", "") or ""),
                             "student_name": str(getattr(user_obj, "real_name", "") or ""),
+                            "submission_status": submission_status,
+                            "grading_status": grading_status,
                             "result": result_value,
+                            "ai_score": ai_score,
+                            "final_score": final_score,
+                            "ai_feedback": ai_feedback,
                             "is_typical_error": is_typical_error,
                             "submitted_at": submitted_at,
                             "duration_sec": duration_sec,
@@ -828,6 +901,8 @@ class TEAAnalysisService:
 
                 if not submission_obj:
                     return False, status.HTTP_404_NOT_FOUND, "作答记录不存在", None
+                if getattr(submission_obj, "status", None) not in self._formal_submission_statuses():
+                    return False, status.HTTP_404_NOT_FOUND, "作答记录尚未正式提交", None
 
                 class_id_col = self._pick_attr(QuizSubmission, "class_id")
                 student_id_col = self._pick_attr(QuizSubmission, "student_id", "user_id", "submitter_id")
@@ -868,40 +943,74 @@ class TEAAnalysisService:
                 class_obj = class_result.scalar_one_or_none()
 
                 answer_items: list[dict[str, Any]] = []
+                question_ids_result = await session.execute(
+                    select(QuizQuestion.question_id)
+                    .where(QuizQuestion.quiz_id == int(submission_obj.quiz_id))
+                    .order_by(QuizQuestion.sort_no.asc(), QuizQuestion.id.asc())
+                )
+                quiz_question_ids = [int(item) for item in question_ids_result.scalars().all()]
+
+                answer_rows: list[Any] = []
                 if hasattr(SubmissionAnswer, "submission_id"):
                     answer_stmt = select(SubmissionAnswer).where(SubmissionAnswer.submission_id == submission_id)
                     answer_result = await session.execute(answer_stmt)
                     answer_rows = answer_result.scalars().all()
 
-                    for answer_obj in answer_rows:
-                        question_id = int(self._pick_attr(answer_obj, "question_id") or 0)
+                answer_by_question_id = {
+                    int(self._pick_attr(answer_obj, "question_id") or 0): answer_obj
+                    for answer_obj in answer_rows
+                }
 
-                        question_obj = None
-                        if question_id > 0:
-                            question_stmt = select(Question).where(Question.id == question_id)
-                            question_result = await session.execute(question_stmt)
-                            question_obj = question_result.scalar_one_or_none()
+                question_result = await session.execute(
+                    select(Question).where(Question.id.in_(quiz_question_ids))
+                )
+                question_rows = question_result.scalars().all()
+                question_by_id = {int(question_obj.id): question_obj for question_obj in question_rows}
 
-                        answer_items.append(
-                            {
-                                "answer_id": int(answer_obj.id),
-                                "question_id": question_id,
-                                "question_content": self._get_question_content(question_obj)
-                                if question_obj is not None
-                                else "",
-                                "answer_text": self._pick_attr(
-                                    answer_obj,
-                                    "answer_md",
-                                    "answer_text",
-                                    "content",
-                                    "text_answer",
-                                ),
-                                "result": self._map_result_status(
-                                    self._pick_attr(answer_obj, "result_status")
-                                ),
-                                "score": self._pick_attr(answer_obj, "final_score", "score"),
-                            }
-                        )
+                submission_status = self._map_submission_status(
+                    getattr(submission_obj, "status", None)
+                )
+                for question_id in quiz_question_ids:
+                    answer_obj = answer_by_question_id.get(question_id)
+                    question_obj = question_by_id.get(question_id)
+                    answer_items.append(
+                        {
+                            "answer_id": int(answer_obj.id) if answer_obj is not None else None,
+                            "question_id": question_id,
+                            "question_content": self._get_question_content(question_obj)
+                            if question_obj is not None
+                            else "",
+                            "answer_text": self._pick_attr(
+                                answer_obj,
+                                "answer_md",
+                                "answer_text",
+                                "content",
+                                "text_answer",
+                            )
+                            if answer_obj is not None
+                            else None,
+                            "result": self._build_list_result_status(
+                                submission_status=submission_status,
+                                answer_obj=answer_obj,
+                            ),
+                            "grading_status": self._build_list_grading_status(
+                                submission_status=submission_status,
+                                answer_obj=answer_obj,
+                            ),
+                            "ai_score": float(getattr(answer_obj, "ai_score", 0) or 0)
+                            if answer_obj is not None
+                            else 0.0,
+                            "score": self._pick_attr(answer_obj, "final_score", "score")
+                            if answer_obj is not None
+                            else 0,
+                            "ai_feedback": self._pick_attr(answer_obj, "ai_feedback")
+                            if answer_obj is not None
+                            else None,
+                            "teacher_feedback": self._pick_attr(answer_obj, "teacher_feedback")
+                            if answer_obj is not None
+                            else None,
+                        }
+                    )
 
                 data = {
                     "submission_id": int(submission_obj.id),
@@ -912,6 +1021,9 @@ class TEAAnalysisService:
                     "student_id": student_id,
                     "student_no": student_no,
                     "student_name": student_name,
+                    "submission_status": self._map_submission_status(
+                        getattr(submission_obj, "status", None)
+                    ),
                     "submitted_at": getattr(submission_obj, submitted_at_col.key, None)
                     if submitted_at_col is not None
                     else None,

@@ -5,10 +5,13 @@ from __future__ import annotations
 import base64
 import json
 import mimetypes
+from asyncio import sleep
 from pathlib import Path
 from typing import Any, Literal
 
+import httpx
 from openai import AsyncOpenAI
+from openai import APIConnectionError, APITimeoutError
 from pydantic import BaseModel, Field
 
 from app.configs import base_configs
@@ -50,9 +53,16 @@ class AIGradingService:
         if not base_configs.LLM_API_KEY:
             raise RuntimeError("未配置 LLM_API_KEY，无法调用 AI 批改")
         if self._client is None:
+            http_client = httpx.AsyncClient(
+                timeout=base_configs.LLM_TIMEOUT_SEC,
+                trust_env=base_configs.LLM_TRUST_ENV_PROXY,
+            )
             self._client = AsyncOpenAI(
                 api_key=base_configs.LLM_API_KEY,
                 base_url=base_configs.LLM_BASE_URL,
+                timeout=base_configs.LLM_TIMEOUT_SEC,
+                max_retries=base_configs.LLM_MAX_RETRIES,
+                http_client=http_client,
             )
         return self._client
 
@@ -63,6 +73,9 @@ class AIGradingService:
             "只输出 JSON，不要输出任何额外说明。"
             "JSON 字段必须包含：result_status、ai_score、final_score、ai_feedback、typical_errors。"
             "其中 result_status 仅允许 correct、wrong、partial、unanswered。"
+            "ai_score 和 final_score 必须是数字，范围在 0 到题目满分之间。"
+            "只要学生已作答，就必须给出明确分数，不能省略。"
+            "若判定为 correct，则 ai_score 和 final_score 必须等于满分。"
             "typical_errors 是数组，每项包含 pattern_name、pattern_desc、suggestion_text。"
             "若学生未作答，则 result_status=unanswered，分数为 0。"
         )
@@ -202,6 +215,16 @@ class AIGradingService:
         score = max(0.0, score)
         return min(score, max(full_score, 0.0))
 
+    def _build_score_fallback(self, result_status: str, full_score: float) -> float:
+        normalized_full_score = max(float(full_score or 0), 0.0)
+        if result_status == "correct":
+            return normalized_full_score
+        if result_status == "partial":
+            if normalized_full_score <= 0:
+                return 0.0
+            return min(normalized_full_score, max(round(normalized_full_score * 0.6, 2), 1.0))
+        return 0.0
+
     async def grade_answer(
         self,
         *,
@@ -213,31 +236,45 @@ class AIGradingService:
         image_urls: list[str],
     ) -> AIGradingResult:
         """调用大模型进行批改。"""
+        has_answer = bool((student_answer or "").strip() or image_urls)
         client = self._get_client()
         model_name = (
             base_configs.LLM_VISION_MODEL_KEY
             if image_urls
             else base_configs.LLM_MODEL_KEY
         )
-        response = await client.chat.completions.create(
-            model=model_name,
-            temperature=0.2,
-            response_format={"type": "json_object"},
-            messages=[
-                {"role": "system", "content": self._build_system_prompt()},
-                {
-                    "role": "user",
-                    "content": self._build_user_content(
-                        question_content=question_content,
-                        reference_answer=reference_answer,
-                        student_answer=student_answer,
-                        question_type=question_type,
-                        full_score=full_score,
-                        image_urls=image_urls,
-                    ),
-                },
-            ],
-        )
+        last_error: Exception | None = None
+        for attempt in range(base_configs.LLM_MAX_RETRIES + 1):
+            try:
+                response = await client.chat.completions.create(
+                    model=model_name,
+                    temperature=0.2,
+                    response_format={"type": "json_object"},
+                    messages=[
+                        {"role": "system", "content": self._build_system_prompt()},
+                        {
+                            "role": "user",
+                            "content": self._build_user_content(
+                                question_content=question_content,
+                                reference_answer=reference_answer,
+                                student_answer=student_answer,
+                                question_type=question_type,
+                                full_score=full_score,
+                                image_urls=image_urls,
+                            ),
+                        },
+                    ],
+                )
+                break
+            except (APIConnectionError, APITimeoutError, httpx.RemoteProtocolError) as exc:
+                last_error = exc
+                if attempt >= base_configs.LLM_MAX_RETRIES:
+                    raise RuntimeError(
+                        "AI 服务连接失败，请检查网络、代理或 LLM_BASE_URL 配置"
+                    ) from exc
+                await sleep(min(2**attempt, 3))
+        else:
+            raise RuntimeError("AI 服务调用失败") from last_error
         message = response.choices[0].message
         raw_content = self._extract_content_text(message.content)
         payload = self._parse_json_content(raw_content)
@@ -245,8 +282,18 @@ class AIGradingService:
         result.result_status = self._normalize_status(result.result_status)
         result.ai_score = self._normalize_score(result.ai_score, full_score)
         result.final_score = self._normalize_score(result.final_score, full_score)
+        fallback_score = self._build_score_fallback(result.result_status, full_score)
+        if has_answer and result.ai_score <= 0 < fallback_score:
+            result.ai_score = fallback_score
+        if has_answer and result.final_score <= 0 < fallback_score:
+            result.final_score = fallback_score
+        if result.ai_score <= 0 < result.final_score:
+            result.ai_score = result.final_score
         if result.final_score <= 0 and result.ai_score > 0:
             result.final_score = result.ai_score
+        if result.result_status == "correct":
+            result.ai_score = max(result.ai_score, float(full_score or 0))
+            result.final_score = max(result.final_score, float(full_score or 0))
         if not result.ai_feedback:
             result.ai_feedback = "AI 已完成批改。"
         result.model_name = model_name

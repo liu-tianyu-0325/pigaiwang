@@ -93,6 +93,9 @@ class Settings(BaseSettings):
     LLM_MODEL_KEY: str = "qwen3-max"
     LLM_VISION_MODEL_KEY: str = "qwen-vl-max-latest"
     LLM_API_KEY: str = Field(default="", validation_alias="DASHSCOPE_API_KEY")
+    LLM_TIMEOUT_SEC: float = 60.0
+    LLM_MAX_RETRIES: int = 2
+    LLM_TRUST_ENV_PROXY: bool = False
 
     # ==================== 业务限制 ====================
     FREE_DAILY_LIMIT: int = 20  # 免费用户每天生成次数

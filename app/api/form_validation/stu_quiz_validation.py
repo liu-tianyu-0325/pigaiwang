@@ -90,6 +90,23 @@ class StuSubmitAnswerRequest(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
 
+class StuSubmitQuizRequest(BaseModel):
+    """学生提交整份测验请求。"""
+
+    student_id: str = Field(min_length=1, max_length=32, description="学生用户ID")
+    quiz_id: str = Field(min_length=1, max_length=32, description="测验ID")
+    submitted_at: datetime | None = Field(
+        default=None, description="提交时间，不传则使用当前时间"
+    )
+
+    @field_validator("student_id", "quiz_id", mode="before")
+    @classmethod
+    def strip_common_fields(cls, value: Any) -> Any:
+        return strip_strings(value)
+
+    model_config = ConfigDict(from_attributes=True)
+
+
 class StuTriggerAnswerGradingRequest(BaseModel):
     """学生手动触发 AI 批改请求。"""
 

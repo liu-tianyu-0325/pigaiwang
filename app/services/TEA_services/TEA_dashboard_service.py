@@ -23,6 +23,14 @@ from app.storage.database_models import (
 class TEADashboardService:
     """教师端总览服务。"""
 
+    @staticmethod
+    def _formal_submission_statuses() -> tuple[SubmissionStatus, ...]:
+        return (
+            SubmissionStatus.submitted,
+            SubmissionStatus.grading,
+            SubmissionStatus.reviewed,
+        )
+
     async def get_overview(
         self,
         teacher_id: int | str,
@@ -114,12 +122,7 @@ class TEADashboardService:
                             Quiz.creator_id == teacher_id,
                             QuizSubmission.submitted_at >= week_start,
                             QuizSubmission.submitted_at < week_end,
-                            QuizSubmission.status.in_(
-                                [
-                                    SubmissionStatus.submitted,
-                                    SubmissionStatus.reviewed,
-                                ]
-                            ),
+                            QuizSubmission.status.in_(self._formal_submission_statuses()),
                         )
                     )
                 )
@@ -133,12 +136,7 @@ class TEADashboardService:
                             Quiz.creator_id == teacher_id,
                             QuizSubmission.submitted_at >= last_week_start,
                             QuizSubmission.submitted_at < last_week_end,
-                            QuizSubmission.status.in_(
-                                [
-                                    SubmissionStatus.submitted,
-                                    SubmissionStatus.reviewed,
-                                ]
-                            ),
+                            QuizSubmission.status.in_(self._formal_submission_statuses()),
                         )
                     )
                 )

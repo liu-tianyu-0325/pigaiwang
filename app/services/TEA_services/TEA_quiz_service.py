@@ -14,6 +14,7 @@ from app.storage.database_models import (
     QuizClassRel,
     QuizQuestion,
     QuizSubmission,
+    SubmissionStatus,
 )
 from app.utils.snowflake_id import generate_id
 
@@ -61,6 +62,14 @@ class TEAQuizService:
         if hasattr(status_value, "value"):
             return str(status_value.value)
         return str(status_value)
+
+    @staticmethod
+    def _formal_submission_statuses() -> tuple[SubmissionStatus, ...]:
+        return (
+            SubmissionStatus.submitted,
+            SubmissionStatus.grading,
+            SubmissionStatus.reviewed,
+        )
 
     async def _sync_table_id_sequence(
         self,
@@ -227,6 +236,7 @@ class TEAQuizService:
                 and_(
                     QuizSubmission.quiz_id == quiz_id,
                     class_id_col.in_(class_ids),
+                    QuizSubmission.status.in_(self._formal_submission_statuses()),
                 )
             )
             .group_by(class_id_col)
@@ -242,7 +252,8 @@ class TEAQuizService:
     ) -> float:
         avg_score = await session.scalar(
             select(func.coalesce(func.avg(QuizSubmission.final_score), 0)).where(
-                QuizSubmission.quiz_id == quiz_id
+                QuizSubmission.quiz_id == quiz_id,
+                QuizSubmission.status.in_(self._formal_submission_statuses()),
             )
         )
         return round(float(avg_score or 0), 2)

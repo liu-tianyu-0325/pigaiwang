@@ -101,6 +101,19 @@ class StuSubmitAnswerResponseModel(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
 
+class StuSubmitQuizResponseModel(BaseModel):
+    """学生提交整份测验响应。"""
+
+    submission_id: str = Field(description="测验提交ID")
+    answered_count: int = Field(description="已作答题数")
+    question_count: int = Field(description="题目总数")
+    submission_status: str = Field(description="测验提交状态")
+    grading_status: str = Field(description="整卷批改状态")
+    submitted_at: datetime = Field(description="测验提交时间")
+
+    model_config = ConfigDict(from_attributes=True)
+
+
 class StuTriggerAnswerGradingResponseModel(BaseModel):
     """学生手动触发 AI 批改响应。"""
 
