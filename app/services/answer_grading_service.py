@@ -87,6 +87,7 @@ class AnswerGradingService:
                 .where(
                     SubmissionAnswer.submission_id == submission_id,
                     SubmissionAnswer.is_answered.is_(True),
+                    SubmissionAnswer.grading_status != GradingStatus.graded,
                 )
                 .order_by(SubmissionAnswer.sort_no.asc(), SubmissionAnswer.id.asc())
             )

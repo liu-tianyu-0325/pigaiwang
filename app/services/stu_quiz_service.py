@@ -497,6 +497,9 @@ class StuQuizService:
     ) -> tuple[bool, int, str, dict | None]:
         """学生提交答案。"""
         submit_time = to_naive_utc(submitted_at) or datetime.utcnow()
+        answer_id_value: int | None = None
+        should_schedule_grading = False
+        auto_submitted = False
         async with AsyncSessionLocal() as session:
             try:
                 quiz = await session.get(Quiz, int(quiz_id))
@@ -630,22 +633,29 @@ class StuQuizService:
                 if answered_count >= quiz.question_count and quiz.question_count > 0:
                     submission.status = SubmissionStatus.submitted
                     submission.submitted_at = submit_time
+                    auto_submitted = True
                 else:
                     submission.status = SubmissionStatus.in_progress
 
                 answer_id_value = int(answer.id)
+                should_schedule_grading = bool(answer.is_answered)
+                response_grading_status = (
+                    "批改中" if should_schedule_grading else "未提交未批改"
+                )
+                response_submission_status = (
+                    SubmissionStatus.grading.value
+                    if auto_submitted and should_schedule_grading
+                    else submission.status.value
+                )
                 response_data = {
                     "submission_id": str(submission.id),
                     "answer_id": str(answer_id_value),
                     "answered_count": answered_count,
-                    "grading_status": self._build_answer_grading_status(
-                        answer, submission
-                    ),
-                    "submission_status": submission.status.value,
+                    "grading_status": response_grading_status,
+                    "submission_status": response_submission_status,
                     "submitted_at": submit_time,
                 }
                 await session.commit()
-                return True, status.HTTP_200_OK, "提交成功", response_data
             except Exception as e:
                 await session.rollback()
                 return (
@@ -654,6 +664,31 @@ class StuQuizService:
                     f"操作失败，请稍后重试: {e}",
                     None,
                 )
+
+        if should_schedule_grading and answer_id_value is not None:
+            try:
+                get_running_loop()
+                answer_grading_service.schedule_grade_answer(answer_id_value)
+            except RuntimeError:
+                logger.warning("当前上下文无事件循环，未能自动调度单题 AI 批改")
+
+        if auto_submitted:
+            return (
+                True,
+                status.HTTP_200_OK,
+                "提交成功，已开始单题自动批改，且整份测验已自动提交",
+                response_data,
+            )
+
+        if should_schedule_grading:
+            return (
+                True,
+                status.HTTP_200_OK,
+                "提交成功，已开始单题自动批改",
+                response_data,
+            )
+
+        return True, status.HTTP_200_OK, "提交成功", response_data
 
     async def submit_quiz(
         self,
@@ -720,24 +755,34 @@ class StuQuizService:
                 if submission.started_at is None:
                     submission.started_at = submit_time
 
-                if submission.answered_count > 0:
-                    answered_rows = (
+                pending_answer_count = int(
+                    (
                         await session.execute(
-                            select(SubmissionAnswer).where(
+                            select(func.count(SubmissionAnswer.id)).where(
                                 SubmissionAnswer.submission_id == submission.id,
                                 SubmissionAnswer.is_answered.is_(True),
+                                SubmissionAnswer.grading_status != GradingStatus.graded,
                             )
                         )
-                    ).scalars().all()
-                    for answer in answered_rows:
-                        answer.grading_status = GradingStatus.grading
+                    ).scalar_one()
+                    or 0
+                )
+
+                if submission.answered_count > 0 and pending_answer_count == 0:
+                    submission.status = SubmissionStatus.reviewed
+                elif submission.answered_count > 0:
+                    submission.status = SubmissionStatus.grading
+                else:
+                    submission.status = SubmissionStatus.submitted
 
                 submission_id_value = int(submission.id)
                 answered_count_value = int(submission.answered_count or 0)
                 question_count_value = int(submission.question_count or 0)
                 submission_status_value = submission.status.value
                 grading_status_value = (
-                    "批改中" if answered_count_value > 0 else "无需批改"
+                    "批改中"
+                    if pending_answer_count > 0
+                    else ("已批改" if answered_count_value > 0 else "无需批改")
                 )
 
                 response_data = {
@@ -750,7 +795,7 @@ class StuQuizService:
                 }
                 await session.commit()
 
-                if answered_count_value > 0:
+                if pending_answer_count > 0:
                     try:
                         get_running_loop()
                         answer_grading_service.schedule_grade_submission(submission_id_value)
@@ -760,6 +805,14 @@ class StuQuizService:
                         True,
                         status.HTTP_200_OK,
                         "测验提交成功，已开始自动批改",
+                        response_data,
+                    )
+
+                if answered_count_value > 0:
+                    return (
+                        True,
+                        status.HTTP_200_OK,
+                        "测验提交成功，当前已作答题目均已完成批改",
                         response_data,
                     )
 
