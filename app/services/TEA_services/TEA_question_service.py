@@ -12,6 +12,7 @@ from sqlalchemy import and_, delete, distinct, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.configs import base_configs
+from app.core import s3_client
 from app.storage.base import AsyncSessionLocal
 from app.storage.database_models import (
     Question,
@@ -68,15 +69,10 @@ class TEAQuestionService:
         )
 
     def _build_public_object_url(self, bucket_name: str, object_key: str) -> str:
-        s3_url = str(getattr(base_configs, "S3_URL")).rstrip("/")
-        return f"{s3_url}/{bucket_name}/{object_key}"
+        return s3_client.build_public_object_url(bucket_name, object_key)
 
     def _extract_object_key_from_url(self, image_url: str, bucket_name: str) -> str | None:
-        s3_url = str(getattr(base_configs, "S3_URL")).rstrip("/")
-        prefix = f"{s3_url}/{bucket_name}/"
-        if image_url.startswith(prefix):
-            return image_url[len(prefix):]
-        return None
+        return s3_client.extract_object_key_from_url(image_url, bucket_name)
 
     def _parse_tag_ids_json(self, tag_ids_json: str | None) -> list[int]:
         """解析标签 ID 字符串。
@@ -156,14 +152,20 @@ class TEAQuestionService:
         )
         result = await session.execute(stmt)
         rows = result.scalars().all()
-        return [
-            {
-                "image_id": row.id,
-                "image_url": row.image_url,
-                "sort_no": row.sort_no,
-            }
-            for row in rows
-        ]
+        bucket_name = self._get_question_bucket_name()
+        items: list[dict[str, Any]] = []
+        for row in rows:
+            items.append(
+                {
+                    "image_id": row.id,
+                    "image_url": await s3_client.resolve_download_url(
+                        row.image_url,
+                        bucket_name,
+                    ),
+                    "sort_no": row.sort_no,
+                }
+            )
+        return items
 
     async def _build_question_detail_dict(
         self,
@@ -231,6 +233,8 @@ class TEAQuestionService:
         extra_args: dict[str, Any] = {}
         if upload_file.content_type:
             extra_args["ContentType"] = upload_file.content_type
+        if getattr(base_configs, "S3_OBJECT_PUBLIC_READ", False):
+            extra_args["ACL"] = "public-read"
 
         s3_client.put_object(
             Bucket=bucket_name,

@@ -11,7 +11,7 @@ class TEAQuizListRequest(BaseModel):
         description="测验状态：all / ongoing / completed / expired",
     )
     page: int = Field(default=1, ge=1, description="页码")
-    page_size: int = Field(default=10, ge=1, le=100, description="每页数量")
+    page_size: int = Field(default=10, ge=1, le=10000, description="每页数量")
 
     @field_validator("status")
     @classmethod

@@ -27,6 +27,7 @@ Example:
             await c.upload_fileobj(fp, "bucket", "key", Config=s3.transfer_config)
 """
 
+import json
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import BinaryIO
@@ -118,17 +119,96 @@ class S3Client:
 
     async def init_buckets(self):
         """初始化存储桶"""
+        bucket_names = {bucket.value for bucket in BucketMenu}
+        for attr_name in (
+            "QUESTION_IMAGE_BUCKET",
+            "QUESTION_S3_BUCKET",
+            "S3_BUCKET_NAME",
+            "S3_BUCKET",
+            "RUSTFS_BUCKET",
+        ):
+            bucket_name = getattr(base_configs, attr_name, None)
+            if bucket_name:
+                bucket_names.add(str(bucket_name))
+
         async with self.client() as c:
-            for bucket in BucketMenu:
-                bucket_name = bucket.value
+            for bucket_name in bucket_names:
                 try:
                     await c.create_bucket(Bucket=bucket_name)
-                    print(f"✓ 创建桶: {bucket}")
+                    print(f"✓ 创建桶: {bucket_name}")
                 except Exception as e:
                     if "BucketAlreadyOwnedByYou" in str(e):
                         pass
                     else:
-                        print(f"❌ 创建桶失败: {bucket}", e)
+                        print(f"❌ 创建桶失败: {bucket_name}", e)
+
+                if getattr(base_configs, "S3_PUBLIC_READ_POLICY", False):
+                    try:
+                        policy = {
+                            "Version": "2012-10-17",
+                            "Statement": [
+                                {
+                                    "Sid": "PublicReadGetObject",
+                                    "Effect": "Allow",
+                                    "Principal": "*",
+                                    "Action": ["s3:GetObject"],
+                                    "Resource": [f"arn:aws:s3:::{bucket_name}/*"],
+                                }
+                            ],
+                        }
+                        await c.put_bucket_policy(
+                            Bucket=bucket_name,
+                            Policy=json.dumps(policy, ensure_ascii=False),
+                        )
+                        print(f"✓ 设置桶公开读策略: {bucket_name}")
+                    except Exception as e:
+                        print(f"❌ 设置桶公开读策略失败: {bucket_name}", e)
+
+    def get_public_endpoint(self) -> str:
+        public_url = getattr(base_configs, "S3_PUBLIC_URL", None)
+        if public_url:
+            return str(public_url).rstrip("/")
+        return str(base_configs.S3_URL).rstrip("/")
+
+    def build_public_object_url(self, bucket: str, key: str) -> str:
+        return f"{self.get_public_endpoint()}/{bucket}/{key.lstrip('/')}"
+
+    def extract_object_key_from_url(self, image_url: str, bucket: str) -> str | None:
+        normalized = (image_url or "").strip()
+        if not normalized:
+            return None
+
+        candidate_prefixes = [
+            f"{self.get_public_endpoint()}/{bucket}/",
+            f"{str(base_configs.S3_URL).rstrip('/')}\/{bucket}/".replace("\\/", "/"),
+        ]
+        for prefix in candidate_prefixes:
+            if normalized.startswith(prefix):
+                return normalized[len(prefix):]
+        return None
+
+    async def resolve_download_url(
+        self,
+        image_url: str,
+        bucket: str,
+        expires: int | None = None,
+    ) -> str:
+        normalized = (image_url or "").strip()
+        if not normalized:
+            return normalized
+
+        object_key = self.extract_object_key_from_url(normalized, bucket)
+        if object_key is None:
+            return normalized
+
+        if getattr(base_configs, "S3_USE_PRESIGNED_DOWNLOAD_URL", False):
+            expires_in = int(
+                expires
+                or getattr(base_configs, "S3_PRESIGNED_DOWNLOAD_EXPIRES", 3600)
+            )
+            return await self.presign_download(bucket, object_key, expires=expires_in)
+
+        return self.build_public_object_url(bucket, object_key)
 
     @asynccontextmanager
     async def client(self):

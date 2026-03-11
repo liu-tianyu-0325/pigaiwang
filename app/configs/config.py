@@ -48,6 +48,7 @@ class Settings(BaseSettings):
 
     # ==================== 对象存储（MinIO / AWS S3） ====================
     S3_URL: str = "http://localhost:9000"
+    S3_PUBLIC_URL: str | None = None
     S3_ACCESS_KEY: str = "minioadmin"
     S3_SECRET_KEY: str = "minioadmin"
     QUESTION_IMAGE_BUCKET: str = "pigaiwang-dev-question-images"
@@ -59,6 +60,10 @@ class Settings(BaseSettings):
     S3_MULTIPART_THRESHOLD: int = 8 * 1024 * 1024  # 8MB
     S3_MULTIPART_CHUNKSIZE: int = 8 * 1024 * 1024
     S3_MAX_CONCURRENCY: int = 10
+    S3_OBJECT_PUBLIC_READ: bool = False
+    S3_PUBLIC_READ_POLICY: bool = False
+    S3_USE_PRESIGNED_DOWNLOAD_URL: bool = False
+    S3_PRESIGNED_DOWNLOAD_EXPIRES: int = 3600
 
     # ==================== JWT 认证 ====================
     SECRET_KEY: str = "change-me-to-very-long-random-secret-key-64+chars"

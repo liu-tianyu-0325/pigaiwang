@@ -17,6 +17,7 @@ from sqlalchemy import and_, delete, desc, func, select
 
 from app.common.time_ import to_naive_utc
 from app.configs import base_configs
+from app.core import s3_client
 from app.services.answer_grading_service import answer_grading_service
 from app.storage import AsyncSessionLocal, GradingStatus, ResultStatus, SubmissionStatus
 from app.storage.database_models import (
@@ -81,8 +82,16 @@ class StuQuizService:
         )
 
     def _build_public_object_url(self, bucket_name: str, object_key: str) -> str:
-        s3_url = str(getattr(base_configs, "S3_URL")).rstrip("/")
-        return f"{s3_url}/{bucket_name}/{object_key}"
+        return s3_client.build_public_object_url(bucket_name, object_key)
+
+    async def _resolve_answer_image_urls(self, image_urls: list[str]) -> list[str]:
+        bucket_name = self._get_answer_bucket_name()
+        resolved: list[str] = []
+        for image_url in image_urls:
+            resolved.append(
+                await s3_client.resolve_download_url(image_url, bucket_name)
+            )
+        return resolved
 
     async def _upload_answer_image(
         self,
@@ -111,6 +120,8 @@ class StuQuizService:
         extra_args: dict[str, Any] = {}
         if upload_file.content_type:
             extra_args["ContentType"] = upload_file.content_type
+        if getattr(base_configs, "S3_OBJECT_PUBLIC_READ", False):
+            extra_args["ACL"] = "public-read"
 
         s3_client.put_object(
             Bucket=bucket_name,
@@ -411,7 +422,7 @@ class StuQuizService:
                         .scalars()
                         .all()
                     )
-                    image_urls = list(image_rows)
+                    image_urls = await self._resolve_answer_image_urls(list(image_rows))
 
                     error_rows = (
                         await session.execute(
@@ -807,6 +818,7 @@ class StuQuizService:
                     .scalars()
                     .all()
                 )
+                image_urls = await self._resolve_answer_image_urls(image_urls)
                 latest_log = (
                     (
                         await session.execute(

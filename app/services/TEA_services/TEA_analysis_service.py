@@ -5,6 +5,8 @@ from fastapi import status
 from sqlalchemy import and_, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.configs import base_configs
+from app.core import s3_client
 from app.storage.base import AsyncSessionLocal
 from app.storage.database_models import (
     AnswerTypicalErrorRel,
@@ -19,17 +21,32 @@ from app.storage.database_models import (
     QuizClassRel,
     QuizQuestion,
     QuizSubmission,
+    ResultStatus,
     StudentProfile,
     SubmissionAnswer,
     SubmissionAnswerImage,
     SubmissionStatus,
     TypicalErrorPattern,
-    ResultStatus,
 )
 
 
 class TEAAnalysisService:
     """教师端测验分析业务逻辑。"""
+
+    @staticmethod
+    def _get_image_bucket_name() -> str:
+        candidate_attr_names = [
+            "QUESTION_IMAGE_BUCKET",
+            "QUESTION_S3_BUCKET",
+            "S3_BUCKET_NAME",
+            "S3_BUCKET",
+            "RUSTFS_BUCKET",
+        ]
+        for attr_name in candidate_attr_names:
+            bucket_name = getattr(base_configs, attr_name, None)
+            if bucket_name:
+                return str(bucket_name)
+        raise ValueError("未找到图片桶配置，请补充 QUESTION_IMAGE_BUCKET / S3_BUCKET_NAME")
 
     @staticmethod
     def _pick_attr(model_or_obj: Any, *names: str) -> Any:
@@ -141,7 +158,14 @@ class TEAAnalysisService:
             .where(QuestionImage.question_id == question_id)
             .order_by(QuestionImage.sort_no.asc(), QuestionImage.id.asc())
         )
-        return list(result.scalars().all())
+        bucket_name = self._get_image_bucket_name()
+        image_urls = list(result.scalars().all())
+        resolved_urls: list[str] = []
+        for image_url in image_urls:
+            resolved_urls.append(
+                await s3_client.resolve_download_url(image_url, bucket_name)
+            )
+        return resolved_urls
 
     async def _get_answer_image_urls(
         self,
@@ -153,7 +177,14 @@ class TEAAnalysisService:
             .where(SubmissionAnswerImage.answer_id == answer_id)
             .order_by(SubmissionAnswerImage.sort_no.asc(), SubmissionAnswerImage.id.asc())
         )
-        return list(result.scalars().all())
+        bucket_name = self._get_image_bucket_name()
+        image_urls = list(result.scalars().all())
+        resolved_urls: list[str] = []
+        for image_url in image_urls:
+            resolved_urls.append(
+                await s3_client.resolve_download_url(image_url, bucket_name)
+            )
+        return resolved_urls
 
     async def _get_answer_typical_errors(
         self,
@@ -456,7 +487,7 @@ class TEAAnalysisService:
     ) -> float:
         stmt = select(func.coalesce(func.avg(QuizSubmission.final_score), 0)).where(
             QuizSubmission.quiz_id == quiz_id,
-                QuizSubmission.status.in_(self._formal_submission_statuses()),
+            QuizSubmission.status.in_(self._formal_submission_statuses()),
         )
         if class_id is not None:
             stmt = stmt.where(QuizSubmission.class_id == class_id)
@@ -991,7 +1022,7 @@ class TEAAnalysisService:
         self,
         teacher_id: int | str,
         quiz_id: int,
-        class_id: int,
+        class_id: int | None,
         question_id: int | None,
         page: int,
         page_size: int,
@@ -1000,30 +1031,47 @@ class TEAAnalysisService:
             try:
                 teacher_id = int(teacher_id)
                 owned_class_ids = set(await self._get_owned_class_ids(session, teacher_id))
-                if class_id not in owned_class_ids:
-                    return False, status.HTTP_404_NOT_FOUND, "班级不存在或无权限", None
+                quiz_class_ids = set(await self._get_quiz_class_ids(session, quiz_id))
+                visible_class_ids = sorted(list(owned_class_ids.intersection(quiz_class_ids)))
+
+                if not visible_class_ids:
+                    return False, status.HTTP_404_NOT_FOUND, "测验不存在或无权限", None
+
+                if class_id is not None:
+                    if class_id not in visible_class_ids:
+                        return False, status.HTTP_404_NOT_FOUND, "班级不存在或无权限", None
+                    visible_class_ids = [class_id]
+
+                if question_id is not None:
+                    quiz_question_ids = set(await self._get_quiz_question_ids(session, quiz_id))
+                    if question_id not in quiz_question_ids:
+                        return False, status.HTTP_404_NOT_FOUND, "题目不存在或不属于该测验", None
 
                 student_stmt = (
-                    select(AppUser, StudentProfile, ClassStudent)
+                    select(AppUser, StudentProfile, ClassStudent, ClassRoom)
                     .join(ClassStudent, ClassStudent.student_id == AppUser.id)
                     .join(StudentProfile, StudentProfile.user_id == AppUser.id)
+                    .join(ClassRoom, ClassRoom.id == ClassStudent.class_id)
                     .where(
-                        ClassStudent.class_id == class_id,
+                        ClassStudent.class_id.in_(visible_class_ids),
                         ClassStudent.join_status == ClassStudentStatus.active,
                     )
-                    .order_by(AppUser.id.desc())
+                    .order_by(ClassStudent.class_id.asc(), AppUser.id.desc())
                 )
                 student_result = await session.execute(student_stmt)
                 student_rows = student_result.all()
 
                 items: list[dict[str, Any]] = []
-                for user_obj, profile_obj, _class_student_obj in student_rows:
+                for user_obj, profile_obj, class_student_obj, class_obj in student_rows:
                     student_id = int(user_obj.id)
+                    current_class_id = int(class_student_obj.class_id)
+                    current_class_name = self._get_class_name(class_obj)
+
                     submission_stmt = (
                         select(QuizSubmission)
                         .where(
                             QuizSubmission.quiz_id == quiz_id,
-                            QuizSubmission.class_id == class_id,
+                            QuizSubmission.class_id == current_class_id,
                             QuizSubmission.student_id == student_id,
                             QuizSubmission.status.in_(self._formal_submission_statuses()),
                         )
@@ -1058,6 +1106,7 @@ class TEAAnalysisService:
                         answer_stmt = answer_stmt.order_by(SubmissionAnswer.id.desc())
                         answer_result = await session.execute(answer_stmt)
                         answer_obj = answer_result.scalars().first()
+
                         grading_status = self._build_list_grading_status(
                             submission_status=submission_status,
                             answer_obj=answer_obj,
@@ -1088,6 +1137,8 @@ class TEAAnalysisService:
                     items.append(
                         {
                             "submission_id": submission_id,
+                            "class_id": current_class_id,
+                            "class_name": current_class_name,
                             "student_id": student_id,
                             "student_no": str(getattr(profile_obj, "student_no", "") or ""),
                             "student_name": str(getattr(user_obj, "real_name", "") or ""),

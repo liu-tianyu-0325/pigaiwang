@@ -34,4 +34,4 @@ class TEAQuestionSearchRequest(BaseModel):
     tag_ids: list[int] | None = Field(default=None, description="标签ID列表")
     status: str | None = Field(default=None, description="题目状态")
     page: int = Field(default=1, ge=1, description="页码")
-    page_size: int = Field(default=10, ge=1, le=100, description="每页数量")
+    page_size: int = Field(default=10, ge=1, le=10000, description="每页数量")

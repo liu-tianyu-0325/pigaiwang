@@ -42,7 +42,7 @@ class PaginationParams(BaseModel):
     limit: int | None = Field(
         10,
         ge=1,
-        le=100,
+        le=10000,
         description="每页返回的最大记录数（1-100），默认为一页 10 条记录；也可以传 null，返回全部",
     )
 

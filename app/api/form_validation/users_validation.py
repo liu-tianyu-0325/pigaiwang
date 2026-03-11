@@ -79,7 +79,7 @@ class UserListRequest(BaseModel):
     )
     is_admin: Optional[bool] = Field(None, description="是否为管理员")
     page: int = Field(1, ge=1, description="页码（从1开始）")
-    page_size: int = Field(10, ge=1, le=100, description="每页数量（1-100）")
+    page_size: int = Field(10, ge=1, le=10000, description="每页数量（1-100）")
     sort_by: Optional[str] = Field(
         "created_at", description="排序字段（created_at、last_login_at、username等）"
     )

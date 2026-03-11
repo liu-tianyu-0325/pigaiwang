@@ -20,7 +20,7 @@ class BaseLogRequest(BaseModel):
     )
     skip: int = Field(0, ge=0, description="分页跳过的记录数，默认为 0")
     limit: int = Field(
-        10, ge=1, le=100, description="分页返回的记录数，默认为 10，最大不超过 100"
+        10, ge=1, le=10000, description="分页返回的记录数，默认为 10，最大不超过 100"
     )
 
     @field_validator("level")

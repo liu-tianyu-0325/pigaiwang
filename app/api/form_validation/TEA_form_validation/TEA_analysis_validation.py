@@ -30,10 +30,10 @@ class TEAQuizStudentAnswerListRequest(BaseModel):
     """学生作答列表请求。"""
 
     quiz_id: int = Field(..., gt=0, description="测验 ID")
-    class_id: int = Field(..., gt=0, description="班级 ID")
+    class_id: int | None = Field(default=None, description="班级 ID，可为空；为空时查询该测验下全部班级")
     question_id: int | None = Field(default=None, gt=0, description="题目 ID，可选")
     page: int = Field(default=1, ge=1, description="页码")
-    page_size: int = Field(default=10, ge=1, le=100, description="每页数量")
+    page_size: int = Field(default=10, ge=1, le=10000, description="每页数量")
 
 
 class TEAQuizStudentAnswerDetailRequest(BaseModel):

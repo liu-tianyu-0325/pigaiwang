@@ -8,6 +8,8 @@ from dataclasses import dataclass
 from loguru import logger
 from sqlalchemy import case, delete, func, select
 
+from app.configs import base_configs
+from app.core import s3_client
 from app.storage import AsyncSessionLocal, GradingStatus, ResultStatus, SubmissionStatus
 from app.storage.database_models import (
     AIGradingLog,
@@ -46,6 +48,21 @@ class AnswerGradingContext:
 
 class AnswerGradingService:
     """负责调度与落库 AI 批改结果。"""
+
+    @staticmethod
+    def _get_image_bucket_name() -> str:
+        candidate_attr_names = [
+            "QUESTION_IMAGE_BUCKET",
+            "QUESTION_S3_BUCKET",
+            "S3_BUCKET_NAME",
+            "S3_BUCKET",
+            "RUSTFS_BUCKET",
+        ]
+        for attr_name in candidate_attr_names:
+            bucket_name = getattr(base_configs, attr_name, None)
+            if bucket_name:
+                return str(bucket_name)
+        raise ValueError("未找到图片桶配置，请补充 QUESTION_IMAGE_BUCKET / S3_BUCKET_NAME")
 
     def schedule_grade_answer(self, answer_id: int) -> None:
         """异步调度批改任务。"""
@@ -136,6 +153,17 @@ class AnswerGradingService:
                 .scalars()
                 .all()
             )
+            bucket_name = self._get_image_bucket_name()
+            resolved_question_image_urls: list[str] = []
+            for image_url in question_image_urls:
+                resolved_question_image_urls.append(
+                    await s3_client.resolve_download_url(image_url, bucket_name)
+                )
+            resolved_answer_image_urls: list[str] = []
+            for image_url in image_urls:
+                resolved_answer_image_urls.append(
+                    await s3_client.resolve_download_url(image_url, bucket_name)
+                )
             typical_error_rows = (
                 await session.execute(
                     select(TypicalErrorPattern)
@@ -152,9 +180,9 @@ class AnswerGradingService:
                 question_content=question.content_md,
                 reference_answer=question.reference_answer,
                 question_type=question.question_type.value,
-                question_image_urls=list(question_image_urls),
+                question_image_urls=resolved_question_image_urls,
                 student_answer=answer.answer_md,
-                image_urls=list(image_urls),
+                image_urls=resolved_answer_image_urls,
                 known_typical_errors=[
                     {
                         "pattern_name": item.pattern_name,
