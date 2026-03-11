@@ -95,8 +95,8 @@ class Settings(BaseSettings):
     # - LLM_VISION_MODEL_KEY=qwen-vl-max-latest
     # - LLM_API_KEY=sk-xxxx
     LLM_BASE_URL: str = "https://dashscope.aliyuncs.com/compatible-mode/v1"
-    LLM_MODEL_KEY: str = "qwen3-max"
-    LLM_VISION_MODEL_KEY: str = "qwen-image-2.0-pro"
+    LLM_MODEL_KEY: str = "qwen3.5-plus"
+    LLM_VISION_MODEL_KEY: str = "qwen3.5-plus"
     LLM_API_KEY: str = Field(default="", validation_alias="DASHSCOPE_API_KEY")
     LLM_TIMEOUT_SEC: float = 60.0
     LLM_MAX_RETRIES: int = 2
