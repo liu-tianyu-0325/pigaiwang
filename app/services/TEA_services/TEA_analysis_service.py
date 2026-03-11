@@ -5,6 +5,7 @@ from fastapi import status
 from sqlalchemy import and_, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.common.time_ import time_now_naive, to_naive_beijing
 from app.configs import base_configs
 from app.core import s3_client
 from app.storage.base import AsyncSessionLocal
@@ -57,15 +58,11 @@ class TEAAnalysisService:
 
     @staticmethod
     def _now() -> datetime:
-        return datetime.now()
+        return time_now_naive()
 
     @staticmethod
     def _normalize_naive_datetime(value: datetime | None) -> datetime | None:
-        if value is None:
-            return None
-        if value.tzinfo is not None:
-            return value.replace(tzinfo=None)
-        return value
+        return to_naive_beijing(value)
 
     def _enum_to_str(self, value: Any) -> str:
         if value is None:

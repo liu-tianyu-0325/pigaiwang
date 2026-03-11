@@ -1,11 +1,10 @@
 """教师端认证业务逻辑。"""
 
-from datetime import datetime
-
 from fastapi import status
 from sqlalchemy import select, update
 
 from app.auth import jwt_manager
+from app.common.time_ import time_now_naive
 from app.storage.base import AsyncSessionLocal
 from app.storage.database_models import (
     AppUser,
@@ -71,7 +70,7 @@ class TEAAuthService:
                 stmt = (
                     update(AppUser)
                     .where(AppUser.id == user.id)
-                    .values(last_login_at=datetime.utcnow())
+                    .values(last_login_at=time_now_naive())
                 )
                 await session.execute(stmt)
                 await session.flush()

@@ -1,11 +1,10 @@
 """学生认证服务。"""
 
-from datetime import datetime
-
 from fastapi import status
 from sqlalchemy import select, update
 
 from app.auth import jwt_manager
+from app.common.time_ import time_now_naive
 from app.storage import AsyncSessionLocal, UserStatus
 from app.storage.database_models import AppUser, StudentProfile, UserRole
 from app.utils.validation import validation_service
@@ -142,7 +141,7 @@ class StuAuthService:
                 stmt = (
                     update(AppUser)
                     .where(AppUser.id == user.id)
-                    .values(last_login_at=datetime.utcnow())
+                    .values(last_login_at=time_now_naive())
                 )
                 await session.execute(stmt)
                 response_data = {

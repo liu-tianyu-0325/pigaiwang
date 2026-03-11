@@ -23,24 +23,25 @@ from sqlalchemy import (
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column
 
+from app.common.time_ import time_now_naive
 from app.storage.base import Base, register_model
 
 
 class TimeMixin:
     created_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=False), default=datetime.utcnow, nullable=False
+        DateTime(timezone=False), default=time_now_naive, nullable=False
     )
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=False),
-        default=datetime.utcnow,
-        onupdate=datetime.utcnow,
+        default=time_now_naive,
+        onupdate=time_now_naive,
         nullable=False,
     )
 
 
 class CreatedAtMixin:
     created_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=False), default=datetime.utcnow, nullable=False
+        DateTime(timezone=False), default=time_now_naive, nullable=False
     )
 
 

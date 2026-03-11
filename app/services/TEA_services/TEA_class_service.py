@@ -7,6 +7,7 @@ import pandas as pd
 from fastapi import UploadFile, status
 from sqlalchemy import and_, distinct, func, select, update, text
 
+from app.common.time_ import time_now, time_now_naive
 from app.storage.base import AsyncSessionLocal
 from app.storage.database_models import (
     AppUser,
@@ -364,7 +365,7 @@ class TEAClassService:
                     )
                 )
 
-                batch_no = f"TEA_IMPORT_{class_id}_{int(datetime.utcnow().timestamp())}"
+                batch_no = f"TEA_IMPORT_{class_id}_{int(time_now().timestamp())}"
 
                 batch = StudentImportBatch(
                     class_id=class_id,
@@ -456,7 +457,7 @@ class TEAClassService:
                     if fail_count == 0
                     else ImportStatus.partial_failed
                 )
-                batch.finished_at = datetime.utcnow()
+                batch.finished_at = time_now_naive()
 
                 await session.execute(
                     update(ClassRoom)

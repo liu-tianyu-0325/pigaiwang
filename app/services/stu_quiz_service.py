@@ -15,7 +15,7 @@ from fastapi import status
 from loguru import logger
 from sqlalchemy import and_, delete, desc, func, select
 
-from app.common.time_ import to_naive_utc
+from app.common.time_ import time_now_naive, to_naive_beijing
 from app.configs import base_configs
 from app.core import s3_client
 from app.services.answer_grading_service import answer_grading_service
@@ -312,7 +312,7 @@ class StuQuizService:
         status_text: str,
     ) -> tuple[bool, int, str, dict | None]:
         """获取学生测验列表。"""
-        now = datetime.utcnow()
+        now = time_now_naive()
         async with AsyncSessionLocal() as session:
             try:
                 stmt = (
@@ -594,7 +594,7 @@ class StuQuizService:
         duration_sec: int,
     ) -> tuple[bool, int, str, dict | None]:
         """学生提交答案。"""
-        submit_time = to_naive_utc(submitted_at) or datetime.utcnow()
+        submit_time = to_naive_beijing(submitted_at) or time_now_naive()
         answer_id_value: int | None = None
         should_schedule_grading = False
         auto_submitted = False
@@ -801,7 +801,7 @@ class StuQuizService:
         submitted_at: datetime | None,
     ) -> tuple[bool, int, str, dict | None]:
         """学生提交整份测验，并自动触发 AI 批改。"""
-        submit_time = to_naive_utc(submitted_at) or datetime.utcnow()
+        submit_time = to_naive_beijing(submitted_at) or time_now_naive()
         async with AsyncSessionLocal() as session:
             try:
                 quiz = await session.get(Quiz, int(quiz_id))

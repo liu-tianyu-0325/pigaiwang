@@ -17,30 +17,40 @@ zone_info: ZoneInfo = ZoneInfo("Asia/Shanghai")  # 默认使用上海时区
 
 
 def time_now() -> datetime:
-    """返回当前时区时间
+    """返回当前北京时间。
 
     Returns:
-        datetime: 系统时区的当前时间
+        datetime: 带 `Asia/Shanghai` 时区信息的当前时间
     """
     return datetime.now(zone_info)
 
 
-def to_naive_utc(value: datetime | None) -> datetime | None:
-    """将时间归一化为无时区 UTC 时间。
+def time_now_naive() -> datetime:
+    """返回北京时间的无时区时间。"""
+    return time_now().replace(tzinfo=None)
 
-    适用于数据库列为 `TIMESTAMP WITHOUT TIME ZONE` 的场景。
+
+def to_naive_beijing(value: datetime | None) -> datetime | None:
+    """将时间归一化为无时区北京时间。"""
+    if value is None:
+        return None
+    if value.tzinfo is None:
+        return value
+    return value.astimezone(zone_info).replace(tzinfo=None)
+
+
+def to_naive_utc(value: datetime | None) -> datetime | None:
+    """兼容旧名称：当前统一返回无时区北京时间。
+
+    项目统一按北京时间处理无时区时间，保留该函数名仅兼容历史调用。
 
     Args:
         value: 原始时间对象，可为带时区或无时区
 
     Returns:
-        datetime | None: 无时区的 UTC 时间；若输入为 None 则返回 None
+        datetime | None: 无时区的北京时间；若输入为 None 则返回 None
     """
-    if value is None:
-        return None
-    if value.tzinfo is None:
-        return value
-    return value.astimezone(UTC).replace(tzinfo=None)
+    return to_naive_beijing(value)
 
 
 def human_duration(seconds: float) -> str:

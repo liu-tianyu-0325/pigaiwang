@@ -5,6 +5,7 @@ from datetime import datetime, timedelta
 from fastapi import status
 from sqlalchemy import and_, func, select
 
+from app.common.time_ import time_now_naive
 from app.storage.base import AsyncSessionLocal
 from app.storage.database_models import (
     ClassRoom,
@@ -41,7 +42,7 @@ class TEADashboardService:
             try:
                 teacher_id = int(teacher_id)
 
-                now = datetime.utcnow()
+                now = time_now_naive()
                 week_start = now - timedelta(days=now.weekday())
                 week_start = datetime(
                     week_start.year,

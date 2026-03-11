@@ -7,6 +7,8 @@ from datetime import datetime
 
 from pydantic import BaseModel, Field, field_validator
 
+from app.common.time_ import time_now_naive
+
 
 class BaseLogRequest(BaseModel):
     """日志请求基础类，包含通用的日志查询参数和验证逻辑"""
@@ -35,7 +37,7 @@ class BaseLogRequest(BaseModel):
         if v is None:
             return v
         jian_yi_time = datetime.strptime(v, "%Y-%m-%d %H:%M:%S")
-        if jian_yi_time > datetime.now():
+        if jian_yi_time > time_now_naive():
             raise ValueError("开始时间不能超过当前时间")
         return v
 
@@ -44,7 +46,7 @@ class BaseLogRequest(BaseModel):
         if v is None:
             return v
         jian_yi_time = datetime.strptime(v, "%Y-%m-%d %H:%M:%S")
-        if jian_yi_time > datetime.now():
+        if jian_yi_time > time_now_naive():
             raise ValueError("结束时间不能超过当前时间")
         return v
 

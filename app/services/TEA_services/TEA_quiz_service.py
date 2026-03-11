@@ -5,6 +5,7 @@ from fastapi import status
 from sqlalchemy import and_, func, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.common.time_ import time_now_naive, to_naive_beijing
 from app.storage.base import AsyncSessionLocal
 from app.storage.database_models import (
     ClassRoom,
@@ -31,15 +32,11 @@ class TEAQuizService:
 
     @staticmethod
     def _now() -> datetime:
-        return datetime.now()
+        return time_now_naive()
 
     @staticmethod
     def _normalize_naive_datetime(value: datetime | None) -> datetime | None:
-        if value is None:
-            return None
-        if value.tzinfo is not None:
-            return value.replace(tzinfo=None)
-        return value
+        return to_naive_beijing(value)
 
     def _get_quiz_name(self, quiz_obj: Any) -> str:
         value = self._pick_attr(quiz_obj, "quiz_name", "name", "title")

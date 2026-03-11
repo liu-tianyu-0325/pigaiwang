@@ -8,7 +8,7 @@ from datetime import datetime
 
 from sqlalchemy import and_, func, literal, select, text, union_all
 
-from app.common.time_ import to_naive_utc
+from app.common.time_ import to_naive_beijing
 from app.storage import (
     SystemLogModel,
     UserLogModel,
@@ -61,10 +61,10 @@ class AdminLogService:
                 if level:
                     conditions.append(SystemLogModel.level == level)
                 if start_time:
-                    start_time = to_naive_utc(datetime.fromisoformat(start_time))
+                    start_time = to_naive_beijing(datetime.fromisoformat(start_time))
                     conditions.append(SystemLogModel.created_at >= start_time)
                 if end_time:
-                    end_time = to_naive_utc(datetime.fromisoformat(end_time))
+                    end_time = to_naive_beijing(datetime.fromisoformat(end_time))
                     conditions.append(SystemLogModel.created_at <= end_time)
 
                 total_result = await db.execute(
@@ -168,11 +168,11 @@ class AdminLogService:
                     conditions.append(UserLogModel.level == level)
 
                 if start_time:
-                    start_dt = to_naive_utc(datetime.fromisoformat(start_time))
+                    start_dt = to_naive_beijing(datetime.fromisoformat(start_time))
                     conditions.append(UserLogModel.created_at >= start_dt)
 
                 if end_time:
-                    end_dt = to_naive_utc(datetime.fromisoformat(end_time))
+                    end_dt = to_naive_beijing(datetime.fromisoformat(end_time))
                     conditions.append(UserLogModel.created_at <= end_dt)
 
                 # === 总数查询（必须 join）===
@@ -301,12 +301,12 @@ class AdminLogService:
                 end_dt = None
                 if start_time:
                     try:
-                        start_dt = to_naive_utc(datetime.fromisoformat(start_time))
+                        start_dt = to_naive_beijing(datetime.fromisoformat(start_time))
                     except ValueError:
                         return False, 400, "start_time 格式无效，应为 ISO 格式", 0, []
                 if end_time:
                     try:
-                        end_dt = to_naive_utc(datetime.fromisoformat(end_time))
+                        end_dt = to_naive_beijing(datetime.fromisoformat(end_time))
                     except ValueError:
                         return False, 400, "end_time 格式无效，应为 ISO 格式", 0, []
 
