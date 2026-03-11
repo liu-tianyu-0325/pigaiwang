@@ -123,6 +123,22 @@ class AIGradingResult(BaseModel):
     raw_content: str | None = Field(default=None, description="模型原始输出")
 
 
+class HandwritingNormalizationResult(BaseModel):
+    """手写作答识别与归一化结果。"""
+
+    normalized_answer: str = Field(default="", description="归一化后的学生答案")
+    ambiguity_notes: str | None = Field(default=None, description="识别歧义说明")
+    symbol_mapping_notes: list[str] = Field(
+        default_factory=list,
+        description="关键符号识别映射说明",
+    )
+    confidence: Literal["high", "medium", "low"] = Field(
+        default="medium",
+        description="识别可信度",
+    )
+    raw_content: str | None = Field(default=None, description="模型原始输出")
+
+
 class AIGradingService:
     """使用 OpenAI 兼容接口调用千问模型完成作业批改。"""
 
@@ -177,12 +193,26 @@ class AIGradingService:
             "对于方法正确但记号存在局部歧义的答案，反馈中可以提醒书写规范，但分数应主要依据数学思路而非字形。"
         )
 
+    def _build_recognition_system_prompt(self) -> str:
+        return (
+            "你是一名擅长识别学生手写数学答案的助教。"
+            "你的唯一任务是先做手写内容识别与归一化，不要评分。"
+            "请结合题目、参考答案、学生文本答案和学生作答图片，输出一个 JSON。"
+            "重点识别手写数学符号、变量、公式结构、上下标、分数线、根号、括号和不等号。"
+            "尤其注意常见混淆：σ/6、μ/u、x/×、1/l、0/O、-/_、> / ≥、< / ≤。"
+            "如果上下文足以唯一确定某个模糊符号的真实数学含义，请按真实含义归一化。"
+            "如果不能唯一确定，请在 ambiguity_notes 中说明，不要擅自强行改写。"
+            "JSON 字段必须包含：normalized_answer、ambiguity_notes、symbol_mapping_notes、confidence。"
+            "不要输出任何额外说明。"
+        )
+
     def _build_user_prompt(
         self,
         *,
         question_content: str | None,
         reference_answer: str | None,
         student_answer: str | None,
+        recognition_notes: str | None,
         question_type: str,
         full_score: float,
         known_typical_errors: list[dict[str, Any]],
@@ -206,6 +236,7 @@ class AIGradingService:
             f"参考答案：\n{reference_answer or '无'}\n\n"
             f"该题已有典型错误模式：\n{typical_error_text}\n\n"
             f"学生答案：\n{student_answer or '无'}\n\n"
+            f"手写识别归一化备注：\n{recognition_notes or '无'}\n\n"
             "如果同时提供了作答图片，请结合图片内容一起批改。\n"
             "学生作答可能是手写，字迹不标准、拍照模糊、符号不规范。\n"
             "请结合上下文、公式结构、步骤连续性理解学生真实意图。\n"
@@ -221,6 +252,27 @@ class AIGradingService:
             '{"result_status":"partial","ai_score":6,"final_score":6,'
             '"ai_feedback":"答案部分正确，步骤不完整",'
             '"typical_errors":[]}'
+        )
+
+    def _build_recognition_user_prompt(
+        self,
+        *,
+        question_content: str | None,
+        reference_answer: str | None,
+        student_answer: str | None,
+    ) -> str:
+        return (
+            f"题目：\n{question_content or '无'}\n\n"
+            f"参考答案：\n{reference_answer or '无'}\n\n"
+            f"学生文本答案：\n{student_answer or '无'}\n\n"
+            "请先做手写作答识别与归一化，而不是评分。\n"
+            "若图片里存在疑似手写歧义，请优先结合上下文恢复标准数学记号。\n"
+            "例如在正态分布标准化推导中，若某符号局部看似 6，但上下文显示它应为 σ，则应优先归一化为 σ，并在 symbol_mapping_notes 中说明。\n"
+            "请输出 JSON，例如："
+            '{"normalized_answer":"F(x)=Φ((x-μ)/σ)",'
+            '"ambiguity_notes":"手写中疑似将σ写成6，已结合上下文归一化",'
+            '"symbol_mapping_notes":["6 -> σ"],'
+            '"confidence":"medium"}'
         )
 
     def _build_fixed_typical_errors(self, ai_feedback: str, result_status: str) -> list[AIGradingTypicalError]:
@@ -259,6 +311,7 @@ class AIGradingService:
         question_content: str | None,
         reference_answer: str | None,
         student_answer: str | None,
+        recognition_notes: str | None,
         question_type: str,
         full_score: float,
         question_image_urls: list[str],
@@ -269,6 +322,7 @@ class AIGradingService:
             question_content=question_content,
             reference_answer=reference_answer,
             student_answer=student_answer,
+            recognition_notes=recognition_notes,
             question_type=question_type,
             full_score=full_score,
             known_typical_errors=known_typical_errors,
@@ -303,6 +357,50 @@ class AIGradingService:
                     "image_url": {"url": normalized_image_url},
                 }
             )
+        return content
+
+    def _build_recognition_user_content(
+        self,
+        *,
+        question_content: str | None,
+        reference_answer: str | None,
+        student_answer: str | None,
+        question_image_urls: list[str],
+        image_urls: list[str],
+    ) -> list[dict[str, Any]] | str:
+        prompt = self._build_recognition_user_prompt(
+            question_content=question_content,
+            reference_answer=reference_answer,
+            student_answer=student_answer,
+        )
+        if not question_image_urls and not image_urls:
+            return prompt
+
+        content: list[dict[str, Any]] = [{"type": "text", "text": prompt}]
+        if question_image_urls:
+            content.append({"type": "text", "text": "以下是题目配图："})
+            for image_url in question_image_urls:
+                normalized_image_url = self._normalize_image_url(image_url)
+                if not normalized_image_url:
+                    continue
+                content.append(
+                    {
+                        "type": "image_url",
+                        "image_url": {"url": normalized_image_url},
+                    }
+                )
+        if image_urls:
+            content.append({"type": "text", "text": "以下是学生作答图片："})
+            for image_url in image_urls:
+                normalized_image_url = self._normalize_image_url(image_url)
+                if not normalized_image_url:
+                    continue
+                content.append(
+                    {
+                        "type": "image_url",
+                        "image_url": {"url": normalized_image_url},
+                    }
+                )
         return content
 
     def _normalize_image_url(self, image_url: str) -> str | None:
@@ -391,6 +489,69 @@ class AIGradingService:
             return min(normalized_full_score, max(round(normalized_full_score * 0.6, 2), 1.0))
         return 0.0
 
+    async def _call_json_model(
+        self,
+        *,
+        model_name: str,
+        system_prompt: str,
+        user_content: list[dict[str, Any]] | str,
+    ) -> tuple[dict[str, Any], str]:
+        client = self._get_client()
+        last_error: Exception | None = None
+        for attempt in range(base_configs.LLM_MAX_RETRIES + 1):
+            try:
+                response = await client.chat.completions.create(
+                    model=model_name,
+                    temperature=0.2,
+                    response_format={"type": "json_object"},
+                    messages=[
+                        {"role": "system", "content": system_prompt},
+                        {"role": "user", "content": user_content},
+                    ],
+                )
+                break
+            except (APIConnectionError, APITimeoutError, httpx.RemoteProtocolError) as exc:
+                last_error = exc
+                if attempt >= base_configs.LLM_MAX_RETRIES:
+                    raise RuntimeError(
+                        "AI 服务连接失败，请检查网络、代理或 LLM_BASE_URL 配置"
+                    ) from exc
+                await sleep(min(2**attempt, 3))
+        else:
+            raise RuntimeError("AI 服务调用失败") from last_error
+
+        message = response.choices[0].message
+        raw_content = self._extract_content_text(message.content)
+        return self._parse_json_content(raw_content), raw_content
+
+    async def _normalize_handwritten_answer(
+        self,
+        *,
+        model_name: str,
+        question_content: str | None,
+        reference_answer: str | None,
+        student_answer: str | None,
+        question_image_urls: list[str],
+        image_urls: list[str],
+    ) -> HandwritingNormalizationResult | None:
+        if not image_urls:
+            return None
+
+        payload, raw_content = await self._call_json_model(
+            model_name=model_name,
+            system_prompt=self._build_recognition_system_prompt(),
+            user_content=self._build_recognition_user_content(
+                question_content=question_content,
+                reference_answer=reference_answer,
+                student_answer=student_answer,
+                question_image_urls=question_image_urls,
+                image_urls=image_urls,
+            ),
+        )
+        result = HandwritingNormalizationResult.model_validate(payload)
+        result.raw_content = raw_content
+        return result
+
     async def grade_answer(
         self,
         *,
@@ -405,49 +566,57 @@ class AIGradingService:
     ) -> AIGradingResult:
         """调用大模型进行批改。"""
         has_answer = bool((student_answer or "").strip() or image_urls)
-        client = self._get_client()
         model_name = (
             base_configs.LLM_VISION_MODEL_KEY
             if question_image_urls or image_urls
             else base_configs.LLM_MODEL_KEY
         )
-        last_error: Exception | None = None
-        for attempt in range(base_configs.LLM_MAX_RETRIES + 1):
-            try:
-                response = await client.chat.completions.create(
-                    model=model_name,
-                    temperature=0.2,
-                    response_format={"type": "json_object"},
-                    messages=[
-                        {"role": "system", "content": self._build_system_prompt()},
-                        {
-                            "role": "user",
-                            "content": self._build_user_content(
-                                question_content=question_content,
-                                reference_answer=reference_answer,
-                                student_answer=student_answer,
-                                question_type=question_type,
-                                full_score=full_score,
-                                question_image_urls=question_image_urls,
-                                image_urls=image_urls,
-                                known_typical_errors=known_typical_errors,
-                            ),
-                        },
-                    ],
+        normalization_result = await self._normalize_handwritten_answer(
+            model_name=model_name,
+            question_content=question_content,
+            reference_answer=reference_answer,
+            student_answer=student_answer,
+            question_image_urls=question_image_urls,
+            image_urls=image_urls,
+        )
+
+        normalized_student_answer = student_answer or ""
+        recognition_notes = "无"
+        if normalization_result is not None:
+            normalized_parts: list[str] = []
+            if student_answer:
+                normalized_parts.append(f"原始文本答案：\n{student_answer}")
+            if normalization_result.normalized_answer:
+                normalized_parts.append(
+                    f"根据手写图片归一化后的答案：\n{normalization_result.normalized_answer}"
                 )
-                break
-            except (APIConnectionError, APITimeoutError, httpx.RemoteProtocolError) as exc:
-                last_error = exc
-                if attempt >= base_configs.LLM_MAX_RETRIES:
-                    raise RuntimeError(
-                        "AI 服务连接失败，请检查网络、代理或 LLM_BASE_URL 配置"
-                    ) from exc
-                await sleep(min(2**attempt, 3))
-        else:
-            raise RuntimeError("AI 服务调用失败") from last_error
-        message = response.choices[0].message
-        raw_content = self._extract_content_text(message.content)
-        payload = self._parse_json_content(raw_content)
+            normalized_student_answer = "\n\n".join(normalized_parts) or student_answer or ""
+
+            recognition_note_parts = []
+            if normalization_result.ambiguity_notes:
+                recognition_note_parts.append(normalization_result.ambiguity_notes)
+            if normalization_result.symbol_mapping_notes:
+                recognition_note_parts.append(
+                    "符号归一化：" + "；".join(normalization_result.symbol_mapping_notes)
+                )
+            recognition_note_parts.append(f"识别可信度：{normalization_result.confidence}")
+            recognition_notes = "\n".join(recognition_note_parts)
+
+        payload, raw_content = await self._call_json_model(
+            model_name=model_name,
+            system_prompt=self._build_system_prompt(),
+            user_content=self._build_user_content(
+                question_content=question_content,
+                reference_answer=reference_answer,
+                student_answer=normalized_student_answer,
+                recognition_notes=recognition_notes,
+                question_type=question_type,
+                full_score=full_score,
+                question_image_urls=question_image_urls,
+                image_urls=image_urls,
+                known_typical_errors=known_typical_errors,
+            ),
+        )
         result = AIGradingResult.model_validate(payload)
         result.result_status = self._normalize_status(result.result_status)
         result.ai_score = self._normalize_score(result.ai_score, full_score)
