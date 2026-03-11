@@ -1,6 +1,6 @@
 """学生认证相关API路由。"""
 
-from fastapi import APIRouter
+from fastapi import APIRouter, HTTPException, status
 from loguru import logger
 
 from app.api.form_response import BaseResponseModel
@@ -14,9 +14,23 @@ from app.api.form_validation.stu_user_validation import (
     StuLogoutRequest,
     StuRegisterByStudentNoRequest,
 )
+from app.auth import UserClaims, get_current_user_dependency
 from app.services.stu_auth_service import stu_auth_service
 
 router = APIRouter(tags=["学生认证"])
+
+
+def _ensure_student_identity(
+    current_user: UserClaims,
+    requested_student_id: str | None,
+) -> str:
+    student_id = current_user.user_id
+    if requested_student_id is not None and requested_student_id != student_id:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="无权操作其他学生账号",
+        )
+    return student_id
 
 
 @router.post(
@@ -24,11 +38,15 @@ router = APIRouter(tags=["学生认证"])
     response_model=BaseResponseModel[StuLogoutResponseModel],
     summary="学生退出登录",
 )
-async def stu_logout(request: StuLogoutRequest):
+async def stu_logout(
+    request: StuLogoutRequest,
+    current_user: UserClaims = get_current_user_dependency,
+):
     """学生退出登录。"""
-    log = logger.bind(log_type="user", student_id=request.student_id)
+    student_id = _ensure_student_identity(current_user, request.student_id)
+    log = logger.bind(log_type="user", student_id=student_id)
     log.info("学生退出登录")
-    res, code, message, data = await stu_auth_service.logout(request.student_id)
+    res, code, message, data = await stu_auth_service.logout(student_id)
     log.info(message)
     return {"res": res, "code": code, "message": message, "data": data}
 

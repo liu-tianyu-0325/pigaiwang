@@ -13,13 +13,17 @@ from app.storage.database_models import (
     ClassStudent,
     GradingStatus,
     Question,
+    QuestionImage,
     Quiz,
     QuizClassRel,
     QuizQuestion,
     QuizSubmission,
     StudentProfile,
     SubmissionAnswer,
+    SubmissionAnswerImage,
     SubmissionStatus,
+    TypicalErrorPattern,
+    ResultStatus,
 )
 
 
@@ -125,6 +129,162 @@ class TEAAnalysisService:
     def _get_class_name(self, class_obj: Any) -> str:
         value = self._pick_attr(class_obj, "class_name", "name")
         return str(value or "")
+
+    async def _get_question_image_urls(
+        self,
+        session: AsyncSession,
+        question_id: int,
+    ) -> list[str]:
+        result = await session.execute(
+            select(QuestionImage.image_url)
+            .where(QuestionImage.question_id == question_id)
+            .order_by(QuestionImage.sort_no.asc(), QuestionImage.id.asc())
+        )
+        return list(result.scalars().all())
+
+    async def _get_answer_image_urls(
+        self,
+        session: AsyncSession,
+        answer_id: int,
+    ) -> list[str]:
+        result = await session.execute(
+            select(SubmissionAnswerImage.image_url)
+            .where(SubmissionAnswerImage.answer_id == answer_id)
+            .order_by(SubmissionAnswerImage.sort_no.asc(), SubmissionAnswerImage.id.asc())
+        )
+        return list(result.scalars().all())
+
+    async def _get_answer_typical_errors(
+        self,
+        session: AsyncSession,
+        answer_id: int,
+    ) -> list[dict[str, Any]]:
+        rows = (
+            await session.execute(
+                select(TypicalErrorPattern, AnswerTypicalErrorRel)
+                .join(
+                    AnswerTypicalErrorRel,
+                    AnswerTypicalErrorRel.pattern_id == TypicalErrorPattern.id,
+                )
+                .where(AnswerTypicalErrorRel.answer_id == answer_id)
+                .order_by(
+                    AnswerTypicalErrorRel.is_primary.desc(),
+                    TypicalErrorPattern.hit_count.desc(),
+                    TypicalErrorPattern.id.asc(),
+                )
+            )
+        ).all()
+        return [
+            {
+                "pattern_id": int(pattern.id),
+                "pattern_name": pattern.pattern_name,
+                "pattern_desc": pattern.pattern_desc,
+                "suggestion_text": pattern.suggestion_text,
+                "is_primary": bool(rel.is_primary),
+            }
+            for pattern, rel in rows
+        ]
+
+    async def _get_correct_answer_samples(
+        self,
+        session: AsyncSession,
+        quiz_id: int,
+        class_id: int,
+        question_id: int,
+        limit: int = 3,
+    ) -> list[dict[str, Any]]:
+        rows = (
+            await session.execute(
+                select(SubmissionAnswer, AppUser)
+                .join(QuizSubmission, QuizSubmission.id == SubmissionAnswer.submission_id)
+                .join(AppUser, AppUser.id == QuizSubmission.student_id)
+                .where(
+                    QuizSubmission.quiz_id == quiz_id,
+                    QuizSubmission.class_id == class_id,
+                    QuizSubmission.status.in_(self._formal_submission_statuses()),
+                    SubmissionAnswer.question_id == question_id,
+                    SubmissionAnswer.result_status == ResultStatus.correct,
+                )
+                .order_by(SubmissionAnswer.final_score.desc(), SubmissionAnswer.id.desc())
+                .limit(limit)
+            )
+        ).all()
+        items: list[dict[str, Any]] = []
+        for answer_obj, user_obj in rows:
+            items.append(
+                {
+                    "answer_id": int(answer_obj.id),
+                    "student_id": int(user_obj.id),
+                    "student_name": str(getattr(user_obj, "real_name", "") or ""),
+                    "answer_text": getattr(answer_obj, "answer_md", None),
+                    "image_urls": await self._get_answer_image_urls(session, int(answer_obj.id)),
+                }
+            )
+        return items
+
+    async def _get_typical_error_samples(
+        self,
+        session: AsyncSession,
+        quiz_id: int,
+        class_id: int,
+        question_id: int,
+        limit_per_pattern: int = 3,
+    ) -> list[dict[str, Any]]:
+        patterns = (
+            await session.execute(
+                select(TypicalErrorPattern)
+                .where(TypicalErrorPattern.question_id == question_id)
+                .order_by(TypicalErrorPattern.hit_count.desc(), TypicalErrorPattern.id.asc())
+            )
+        ).scalars().all()
+        items: list[dict[str, Any]] = []
+        for pattern in patterns:
+            rows = (
+                await session.execute(
+                    select(SubmissionAnswer, AppUser, AnswerTypicalErrorRel)
+                    .join(QuizSubmission, QuizSubmission.id == SubmissionAnswer.submission_id)
+                    .join(AppUser, AppUser.id == QuizSubmission.student_id)
+                    .join(
+                        AnswerTypicalErrorRel,
+                        AnswerTypicalErrorRel.answer_id == SubmissionAnswer.id,
+                    )
+                    .where(
+                        QuizSubmission.quiz_id == quiz_id,
+                        QuizSubmission.class_id == class_id,
+                        QuizSubmission.status.in_(self._formal_submission_statuses()),
+                        SubmissionAnswer.question_id == question_id,
+                        AnswerTypicalErrorRel.pattern_id == pattern.id,
+                    )
+                    .order_by(
+                        AnswerTypicalErrorRel.is_primary.desc(),
+                        SubmissionAnswer.id.desc(),
+                    )
+                    .limit(limit_per_pattern)
+                )
+            ).all()
+            sample_answers: list[dict[str, Any]] = []
+            for answer_obj, user_obj, rel in rows:
+                sample_answers.append(
+                    {
+                        "answer_id": int(answer_obj.id),
+                        "student_id": int(user_obj.id),
+                        "student_name": str(getattr(user_obj, "real_name", "") or ""),
+                        "answer_text": getattr(answer_obj, "answer_md", None),
+                        "image_urls": await self._get_answer_image_urls(session, int(answer_obj.id)),
+                        "is_primary": bool(rel.is_primary),
+                    }
+                )
+            items.append(
+                {
+                    "pattern_id": int(pattern.id),
+                    "pattern_name": pattern.pattern_name,
+                    "pattern_desc": pattern.pattern_desc,
+                    "suggestion_text": pattern.suggestion_text,
+                    "hit_count": int(pattern.hit_count or 0),
+                    "sample_answers": sample_answers,
+                }
+            )
+        return items
 
     def _calc_quiz_status(
         self,
@@ -743,10 +903,17 @@ class TEAAnalysisService:
                         {
                             "question_id": question_id,
                             "content_md": self._get_question_content(question_obj),
+                            "question_image_urls": await self._get_question_image_urls(session, question_id),
                             "answer_count": answer_count,
                             "correct_count": correct_count,
                             "accuracy_rate": accuracy_rate,
                             "typical_error_rate": typical_error_rate,
+                            "correct_answer_samples": await self._get_correct_answer_samples(
+                                session, quiz_id, class_id, question_id
+                            ),
+                            "typical_error_samples": await self._get_typical_error_samples(
+                                session, quiz_id, class_id, question_id
+                            ),
                         }
                     )
 
@@ -990,6 +1157,7 @@ class TEAAnalysisService:
                             "question_content": self._get_question_content(question_obj)
                             if question_obj is not None
                             else "",
+                            "question_image_urls": await self._get_question_image_urls(session, question_id),
                             "answer_text": self._pick_attr(
                                 answer_obj,
                                 "answer_md",
@@ -999,6 +1167,9 @@ class TEAAnalysisService:
                             )
                             if answer_obj is not None
                             else None,
+                            "answer_image_urls": await self._get_answer_image_urls(session, int(answer_obj.id))
+                            if answer_obj is not None
+                            else [],
                             "result": self._build_list_result_status(
                                 submission_status=submission_status,
                                 answer_obj=answer_obj,
@@ -1019,6 +1190,9 @@ class TEAAnalysisService:
                             "teacher_feedback": self._pick_attr(answer_obj, "teacher_feedback")
                             if answer_obj is not None
                             else None,
+                            "typical_errors": await self._get_answer_typical_errors(session, int(answer_obj.id))
+                            if answer_obj is not None
+                            else [],
                         }
                     )
 

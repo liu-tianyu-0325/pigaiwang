@@ -49,6 +49,7 @@ dependencies = [
     "captcha>=0.7.1",
     "cryptography>=46.0.3",
     "honcho>=2.0.0",
+    "openpyxl>=3.1.5",
 ]
 [[tool.uv.index]]
 name = "tsinghua"

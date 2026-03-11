@@ -13,6 +13,8 @@ from app.storage.database_models import (
     AIGradingLog,
     AnswerTypicalErrorRel,
     Question,
+    QuestionImage,
+    Quiz,
     QuizQuestion,
     QuizSubmission,
     SubmissionAnswer,
@@ -35,8 +37,10 @@ class AnswerGradingContext:
     question_content: str | None
     reference_answer: str | None
     question_type: str
+    question_image_urls: list[str]
     student_answer: str | None
     image_urls: list[str]
+    known_typical_errors: list[dict[str, str | None]]
     full_score: float
 
 
@@ -80,12 +84,14 @@ class AnswerGradingService:
                         QuizSubmission,
                         Question,
                         QuizQuestion,
+                        Quiz,
                     )
                     .join(
                         QuizSubmission,
                         QuizSubmission.id == SubmissionAnswer.submission_id,
                     )
                     .join(Question, Question.id == SubmissionAnswer.question_id)
+                    .join(Quiz, Quiz.id == SubmissionAnswer.quiz_id)
                     .join(
                         QuizQuestion,
                         (QuizQuestion.quiz_id == SubmissionAnswer.quiz_id)
@@ -96,7 +102,26 @@ class AnswerGradingService:
             ).first()
             if row is None:
                 return None
-            answer, submission, question, quiz_question = row
+            answer, submission, question, quiz_question, quiz = row
+            full_score = float(quiz_question.score or 0)
+            if full_score <= 0:
+                question_count = int(submission.question_count or 0)
+                quiz_total_score = float(getattr(quiz, "total_score", 0) or 0)
+                if question_count > 0 and quiz_total_score > 0:
+                    full_score = round(quiz_total_score / question_count, 2)
+                else:
+                    full_score = 100.0
+            question_image_urls = (
+                (
+                    await session.execute(
+                        select(QuestionImage.image_url)
+                        .where(QuestionImage.question_id == question.id)
+                        .order_by(QuestionImage.sort_no.asc(), QuestionImage.id.asc())
+                    )
+                )
+                .scalars()
+                .all()
+            )
             image_urls = (
                 (
                     await session.execute(
@@ -111,6 +136,13 @@ class AnswerGradingService:
                 .scalars()
                 .all()
             )
+            typical_error_rows = (
+                await session.execute(
+                    select(TypicalErrorPattern)
+                    .where(TypicalErrorPattern.question_id == question.id)
+                    .order_by(TypicalErrorPattern.hit_count.desc(), TypicalErrorPattern.id.asc())
+                )
+            ).scalars().all()
             return AnswerGradingContext(
                 answer_id=answer.id,
                 submission_id=submission.id,
@@ -120,9 +152,18 @@ class AnswerGradingService:
                 question_content=question.content_md,
                 reference_answer=question.reference_answer,
                 question_type=question.question_type.value,
+                question_image_urls=list(question_image_urls),
                 student_answer=answer.answer_md,
                 image_urls=list(image_urls),
-                full_score=quiz_question.score,
+                known_typical_errors=[
+                    {
+                        "pattern_name": item.pattern_name,
+                        "pattern_desc": item.pattern_desc,
+                        "suggestion_text": item.suggestion_text,
+                    }
+                    for item in typical_error_rows
+                ],
+                full_score=full_score,
             )
 
     async def _mark_answer_grading(self, answer_id: int) -> None:
@@ -364,7 +405,9 @@ class AnswerGradingService:
                 student_answer=context.student_answer,
                 question_type=context.question_type,
                 full_score=context.full_score,
+                question_image_urls=context.question_image_urls,
                 image_urls=context.image_urls,
+                known_typical_errors=context.known_typical_errors,
             )
             await self._apply_grading_result(context, result)
             return True, "AI 批改完成"

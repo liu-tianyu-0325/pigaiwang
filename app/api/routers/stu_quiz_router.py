@@ -1,6 +1,8 @@
 """学生测验相关API路由。"""
 
-from fastapi import APIRouter
+from datetime import datetime
+
+from fastapi import APIRouter, File, Form, HTTPException, UploadFile, status
 from loguru import logger
 
 from app.api.form_response import BaseResponseModel
@@ -17,12 +19,47 @@ from app.api.form_validation.stu_quiz_validation import (
     StuQuestionDetailRequest,
     StuQuizDetailRequest,
     StuQuizListRequest,
-    StuSubmitAnswerRequest,
     StuSubmitQuizRequest,
 )
+from app.auth import UserClaims, get_current_user_dependency
 from app.services.stu_quiz_service import stu_quiz_service
 
 router = APIRouter(tags=["学生测验"])
+
+
+def _ensure_student_identity(
+    current_user: UserClaims,
+    requested_student_id: str | None,
+) -> str:
+    student_id = current_user.user_id
+    if requested_student_id is not None and requested_student_id != student_id:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="无权访问其他学生数据",
+        )
+    return student_id
+
+
+def _normalize_upload_files(
+    images: list[UploadFile] | None,
+) -> list[UploadFile]:
+    if not images:
+        return []
+
+    valid_files: list[UploadFile] = []
+    for image in images:
+        if image is None:
+            continue
+
+        filename = (image.filename or "").strip()
+        content_type = (image.content_type or "").strip()
+
+        if filename in {"", "string"} and content_type in {"", "application/octet-stream"}:
+            continue
+
+        valid_files.append(image)
+
+    return valid_files
 
 
 @router.post(
@@ -30,12 +67,16 @@ router = APIRouter(tags=["学生测验"])
     response_model=BaseResponseModel[StuQuizListResponseModel],
     summary="获取学生测验列表",
 )
-async def get_stu_quiz_list(request: StuQuizListRequest):
+async def get_stu_quiz_list(
+    request: StuQuizListRequest,
+    current_user: UserClaims = get_current_user_dependency,
+):
     """获取测验列表。"""
-    log = logger.bind(log_type="user", student_id=request.student_id)
+    student_id = _ensure_student_identity(current_user, request.student_id)
+    log = logger.bind(log_type="user", student_id=student_id)
     log.info("学生请求测验列表")
     res, code, message, data = await stu_quiz_service.get_quiz_list(
-        request.student_id,
+        student_id,
         request.status,
     )
     log.info(message)
@@ -47,14 +88,18 @@ async def get_stu_quiz_list(request: StuQuizListRequest):
     response_model=BaseResponseModel[StuQuizDetailResponseModel],
     summary="获取学生测验详情",
 )
-async def get_stu_quiz_detail(request: StuQuizDetailRequest):
+async def get_stu_quiz_detail(
+    request: StuQuizDetailRequest,
+    current_user: UserClaims = get_current_user_dependency,
+):
     """获取测验详情与题目状态列表。"""
+    student_id = _ensure_student_identity(current_user, request.student_id)
     log = logger.bind(
-        log_type="user", student_id=request.student_id, quiz_id=request.quiz_id
+        log_type="user", student_id=student_id, quiz_id=request.quiz_id
     )
     log.info("学生请求测验详情")
     res, code, message, data = await stu_quiz_service.get_quiz_detail(
-        request.student_id,
+        student_id,
         request.quiz_id,
     )
     log.info(message)
@@ -66,17 +111,21 @@ async def get_stu_quiz_detail(request: StuQuizDetailRequest):
     response_model=BaseResponseModel[StuQuestionDetailResponseModel],
     summary="获取学生题目详情",
 )
-async def get_stu_question_detail(request: StuQuestionDetailRequest):
+async def get_stu_question_detail(
+    request: StuQuestionDetailRequest,
+    current_user: UserClaims = get_current_user_dependency,
+):
     """获取题目详情、我的答案和批改信息。"""
+    student_id = _ensure_student_identity(current_user, request.student_id)
     log = logger.bind(
         log_type="user",
-        student_id=request.student_id,
+        student_id=student_id,
         question_id=request.question_id,
         quiz_id=request.quiz_id,
     )
     log.info("学生请求题目详情")
     res, code, message, data = await stu_quiz_service.get_question_detail(
-        request.student_id,
+        student_id,
         request.question_id,
         request.quiz_id,
     )
@@ -87,19 +136,36 @@ async def get_stu_question_detail(request: StuQuestionDetailRequest):
 @router.post(
     "/answer/submit",
     response_model=BaseResponseModel[StuSubmitAnswerResponseModel],
-    summary="学生提交答案",
+    summary="学生提交答案（支持多图上传）",
 )
-async def submit_stu_answer(request: StuSubmitAnswerRequest):
+async def submit_stu_answer(
+    student_id: str | None = Form(default=None, description="学生用户ID（兼容保留，后端仍按当前登录学生处理）"),
+    quiz_id: str = Form(..., description="测验ID"),
+    question_id: str = Form(..., description="题目ID"),
+    answer_md: str | None = Form(default=None, description="Markdown答案文本"),
+    submitted_at: datetime | None = Form(default=None, description="提交时间，不传则使用当前时间"),
+    duration_sec: int = Form(default=0, description="用时，单位秒"),
+    images: list[UploadFile] | None = File(default=None, description="答案图片（可多张）"),
+    current_user: UserClaims = get_current_user_dependency,
+):
     """学生提交题目答案。"""
+    student_id = _ensure_student_identity(current_user, student_id)
     log = logger.bind(
         log_type="user",
-        student_id=request.student_id,
-        quiz_id=request.quiz_id,
-        question_id=request.question_id,
+        student_id=student_id,
+        quiz_id=quiz_id,
+        question_id=question_id,
     )
     log.info("学生提交答案")
+    normalized_images = _normalize_upload_files(images)
     res, code, message, data = await stu_quiz_service.submit_answer(
-        **request.model_dump()
+        student_id=student_id,
+        quiz_id=quiz_id,
+        question_id=question_id,
+        answer_md=answer_md,
+        images=normalized_images,
+        submitted_at=submitted_at,
+        duration_sec=duration_sec,
     )
     log.info(message)
     return {"res": res, "code": code, "message": message, "data": data}
@@ -110,16 +176,22 @@ async def submit_stu_answer(request: StuSubmitAnswerRequest):
     response_model=BaseResponseModel[StuSubmitQuizResponseModel],
     summary="学生提交测验",
 )
-async def submit_stu_quiz(request: StuSubmitQuizRequest):
+async def submit_stu_quiz(
+    request: StuSubmitQuizRequest,
+    current_user: UserClaims = get_current_user_dependency,
+):
     """学生提交整份测验，并自动触发 AI 批改。"""
+    student_id = _ensure_student_identity(current_user, request.student_id)
     log = logger.bind(
         log_type="user",
-        student_id=request.student_id,
+        student_id=student_id,
         quiz_id=request.quiz_id,
     )
     log.info("学生提交测验")
     res, code, message, data = await stu_quiz_service.submit_quiz(
-        **request.model_dump()
+        student_id=student_id,
+        quiz_id=request.quiz_id,
+        submitted_at=request.submitted_at,
     )
     log.info(message)
     return {"res": res, "code": code, "message": message, "data": data}
@@ -130,16 +202,20 @@ async def submit_stu_quiz(request: StuSubmitQuizRequest):
     response_model=BaseResponseModel[StuAnswerGradingViewResponseModel],
     summary="查看 AI 批改视图",
 )
-async def get_stu_answer_grading_view(request: StuAnswerGradingViewRequest):
+async def get_stu_answer_grading_view(
+    request: StuAnswerGradingViewRequest,
+    current_user: UserClaims = get_current_user_dependency,
+):
     """查看指定答案的 AI 批改详情。"""
+    student_id = _ensure_student_identity(current_user, request.student_id)
     log = logger.bind(
         log_type="user",
-        student_id=request.student_id,
+        student_id=student_id,
         answer_id=request.answer_id,
     )
     log.info("学生查看 AI 批改视图")
     res, code, message, data = await stu_quiz_service.get_answer_grading_view(
-        request.student_id,
+        student_id,
         request.answer_id,
     )
     log.info(message)

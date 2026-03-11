@@ -44,6 +44,8 @@ uv sync
 uv run pre-commit install
 ```
 
+说明：项目已通过 `uv` 纳入 `openpyxl` 依赖，拉取最新代码后执行一次 `uv sync` 即可安装。
+
 2. **配置环境变量**
 ```bash
 # 复制环境变量模板
@@ -73,6 +75,9 @@ uv run main.py
 开发时需要安装新的依赖
 ```bash
 uv add package_name
+
+# 例如新增 Excel 读写依赖
+uv add openpyxl
 ```
 
 ### 验证安装

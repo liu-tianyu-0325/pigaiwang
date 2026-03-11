@@ -4,12 +4,19 @@ from __future__ import annotations
 
 from asyncio import get_running_loop
 from datetime import datetime
+import os
+import uuid
+from typing import Any
 
+import boto3
+from botocore.config import Config
+from fastapi import UploadFile
 from fastapi import status
 from loguru import logger
 from sqlalchemy import and_, delete, desc, func, select
 
 from app.common.time_ import to_naive_utc
+from app.configs import base_configs
 from app.services.answer_grading_service import answer_grading_service
 from app.storage import AsyncSessionLocal, GradingStatus, ResultStatus, SubmissionStatus
 from app.storage.database_models import (
@@ -37,6 +44,81 @@ class StuQuizService:
         SubmissionStatus.grading,
         SubmissionStatus.reviewed,
     }
+
+    def _get_answer_bucket_name(self) -> str:
+        candidate_attr_names = [
+            "QUESTION_IMAGE_BUCKET",
+            "QUESTION_S3_BUCKET",
+            "S3_BUCKET_NAME",
+            "S3_BUCKET",
+            "RUSTFS_BUCKET",
+        ]
+        for attr_name in candidate_attr_names:
+            bucket_name = getattr(base_configs, attr_name, None)
+            if bucket_name:
+                return str(bucket_name)
+        raise ValueError("未找到答案图片桶配置，请补充 QUESTION_IMAGE_BUCKET / S3_BUCKET_NAME")
+
+    def _build_s3_client(self):
+        secure_value = getattr(base_configs, "S3_SECURE", False)
+        if isinstance(secure_value, str):
+            use_ssl = secure_value.lower() in {"1", "true", "yes", "on"}
+        else:
+            use_ssl = bool(secure_value)
+
+        return boto3.client(
+            "s3",
+            endpoint_url=getattr(base_configs, "S3_URL"),
+            aws_access_key_id=getattr(base_configs, "S3_ACCESS_KEY"),
+            aws_secret_access_key=getattr(base_configs, "S3_SECRET_KEY"),
+            region_name=getattr(base_configs, "S3_REGION", "us-east-1"),
+            use_ssl=use_ssl,
+            config=Config(
+                s3={"addressing_style": "path"},
+                max_pool_connections=int(getattr(base_configs, "S3_MAX_POOL_CONNECTIONS", 50)),
+                signature_version="s3v4",
+            ),
+        )
+
+    def _build_public_object_url(self, bucket_name: str, object_key: str) -> str:
+        s3_url = str(getattr(base_configs, "S3_URL")).rstrip("/")
+        return f"{s3_url}/{bucket_name}/{object_key}"
+
+    async def _upload_answer_image(
+        self,
+        *,
+        quiz_id: int,
+        question_id: int,
+        student_id: int,
+        sort_no: int,
+        upload_file: UploadFile,
+    ) -> str:
+        bucket_name = self._get_answer_bucket_name()
+        s3_client = self._build_s3_client()
+
+        file_bytes = await upload_file.read()
+        if not file_bytes:
+            raise ValueError("上传图片为空")
+
+        original_filename = upload_file.filename or ""
+        _, extension = os.path.splitext(original_filename)
+        extension = extension.lower() or ".bin"
+        object_key = (
+            f"student/quiz/{quiz_id}/question/{question_id}/student/{student_id}/"
+            f"{uuid.uuid4().hex}_{sort_no}{extension}"
+        )
+
+        extra_args: dict[str, Any] = {}
+        if upload_file.content_type:
+            extra_args["ContentType"] = upload_file.content_type
+
+        s3_client.put_object(
+            Bucket=bucket_name,
+            Key=object_key,
+            Body=file_bytes,
+            **extra_args,
+        )
+        return self._build_public_object_url(bucket_name, object_key)
 
     def _build_display_status(
         self,
@@ -398,7 +480,7 @@ class StuQuizService:
         quiz_id: str,
         question_id: str,
         answer_md: str | None,
-        image_urls: list[str],
+        images: list[UploadFile],
         submitted_at: datetime | None,
         duration_sec: int,
     ) -> tuple[bool, int, str, dict | None]:
@@ -478,6 +560,18 @@ class StuQuizService:
                     )
                     session.add(answer)
                     await session.flush()
+
+                image_urls: list[str] = []
+                for index, image in enumerate(images, start=1):
+                    image_urls.append(
+                        await self._upload_answer_image(
+                            quiz_id=int(quiz_id),
+                            question_id=int(question_id),
+                            student_id=int(student_id),
+                            sort_no=index,
+                            upload_file=image,
+                        )
+                    )
 
                 answer.answer_md = answer_md
                 answer.is_answered = bool(answer_md or image_urls)

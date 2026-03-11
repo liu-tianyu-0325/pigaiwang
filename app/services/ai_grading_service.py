@@ -88,14 +88,30 @@ class AIGradingService:
         student_answer: str | None,
         question_type: str,
         full_score: float,
+        known_typical_errors: list[dict[str, Any]],
     ) -> str:
+        typical_error_text = "无"
+        if known_typical_errors:
+            typical_error_text = "\n".join(
+                [
+                    (
+                        f"- 名称：{item.get('pattern_name', '')}；"
+                        f"描述：{item.get('pattern_desc') or '无'}；"
+                        f"建议：{item.get('suggestion_text') or '无'}"
+                    )
+                    for item in known_typical_errors
+                ]
+            )
         return (
             f"题型：{question_type}\n"
             f"满分：{full_score}\n\n"
             f"题目：\n{question_content or '无'}\n\n"
             f"参考答案：\n{reference_answer or '无'}\n\n"
+            f"该题已有典型错误模式：\n{typical_error_text}\n\n"
             f"学生答案：\n{student_answer or '无'}\n\n"
             "如果同时提供了作答图片，请结合图片内容一起批改。\n\n"
+            "如果学生答案命中了已有典型错误模式，请优先复用已有的 pattern_name。"
+            "只有在现有模式无法覆盖时，再创建新的 typical_errors。\n\n"
             "请严格返回 JSON，例如："
             '{"result_status":"partial","ai_score":6,"final_score":6,'
             '"ai_feedback":"答案部分正确，步骤不完整",'
@@ -112,7 +128,9 @@ class AIGradingService:
         student_answer: str | None,
         question_type: str,
         full_score: float,
+        question_image_urls: list[str],
         image_urls: list[str],
+        known_typical_errors: list[dict[str, Any]],
     ) -> list[dict[str, Any]] | str:
         prompt = self._build_user_prompt(
             question_content=question_content,
@@ -120,11 +138,26 @@ class AIGradingService:
             student_answer=student_answer,
             question_type=question_type,
             full_score=full_score,
+            known_typical_errors=known_typical_errors,
         )
-        if not image_urls:
+        if not question_image_urls and not image_urls:
             return prompt
 
         content: list[dict[str, Any]] = [{"type": "text", "text": prompt}]
+        if question_image_urls:
+            content.append({"type": "text", "text": "以下是题目配图："})
+            for image_url in question_image_urls:
+                normalized_image_url = self._normalize_image_url(image_url)
+                if not normalized_image_url:
+                    continue
+                content.append(
+                    {
+                        "type": "image_url",
+                        "image_url": {"url": normalized_image_url},
+                    }
+                )
+        if image_urls:
+            content.append({"type": "text", "text": "以下是学生作答图片："})
         for image_url in image_urls:
             normalized_image_url = self._normalize_image_url(image_url)
             if not normalized_image_url:
@@ -233,14 +266,16 @@ class AIGradingService:
         student_answer: str | None,
         question_type: str,
         full_score: float,
+        question_image_urls: list[str],
         image_urls: list[str],
+        known_typical_errors: list[dict[str, Any]],
     ) -> AIGradingResult:
         """调用大模型进行批改。"""
         has_answer = bool((student_answer or "").strip() or image_urls)
         client = self._get_client()
         model_name = (
             base_configs.LLM_VISION_MODEL_KEY
-            if image_urls
+            if question_image_urls or image_urls
             else base_configs.LLM_MODEL_KEY
         )
         last_error: Exception | None = None
@@ -260,7 +295,9 @@ class AIGradingService:
                                 student_answer=student_answer,
                                 question_type=question_type,
                                 full_score=full_score,
+                                question_image_urls=question_image_urls,
                                 image_urls=image_urls,
+                                known_typical_errors=known_typical_errors,
                             ),
                         },
                     ],

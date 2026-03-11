@@ -55,7 +55,11 @@ class StuRegisterByStudentNoRequest(BaseModel):
 class StuProfileRequest(BaseModel):
     """学生个人信息请求。"""
 
-    student_id: str = Field(min_length=1, max_length=32, description="学生用户ID")
+    student_id: str | None = Field(
+        default=None,
+        max_length=32,
+        description="学生用户ID（兼容保留，后端仍按当前登录学生处理）",
+    )
 
     @field_validator("student_id", mode="before")
     @classmethod
@@ -68,7 +72,11 @@ class StuProfileRequest(BaseModel):
 class StuLogoutRequest(BaseModel):
     """学生退出登录请求。"""
 
-    student_id: str = Field(min_length=1, max_length=32, description="学生用户ID")
+    student_id: str | None = Field(
+        default=None,
+        max_length=32,
+        description="学生用户ID（兼容保留，后端仍按当前登录学生处理）",
+    )
 
     @field_validator("student_id", mode="before")
     @classmethod

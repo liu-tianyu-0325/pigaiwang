@@ -475,12 +475,21 @@ class TEAQuizService:
                         )
                     )
 
+                per_question_score = 100.0
+                if question_ids:
+                    per_question_score = round(
+                        float(len(question_ids) * 100) / len(question_ids),
+                        2,
+                    )
+
                 for sort_no, question_id in enumerate(question_ids, start=1):
                     payload = {
                         "id": int(generate_id()),
                         "quiz_id": new_quiz_id,
                         "question_id": question_id,
                     }
+                    if hasattr(QuizQuestion, "score"):
+                        payload["score"] = per_question_score
                     if hasattr(QuizQuestion, "sort_no"):
                         payload["sort_no"] = sort_no
                     session.add(QuizQuestion(**payload))

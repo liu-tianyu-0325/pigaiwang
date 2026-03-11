@@ -11,7 +11,11 @@ from app.api.form_validation.user_validation import strip_strings
 class StuQuizListRequest(BaseModel):
     """学生测验列表请求。"""
 
-    student_id: str = Field(min_length=1, max_length=32, description="学生用户ID")
+    student_id: str | None = Field(
+        default=None,
+        max_length=32,
+        description="学生用户ID（兼容保留，后端仍按当前登录学生处理）",
+    )
     status: str = Field(default="全部", description="状态：全部、进行中、已完成、过期")
 
     @field_validator("student_id", "status", mode="before")
@@ -43,7 +47,11 @@ class StuQuizListRequest(BaseModel):
 class StuQuizDetailRequest(BaseModel):
     """学生测验详情请求。"""
 
-    student_id: str = Field(min_length=1, max_length=32, description="学生用户ID")
+    student_id: str | None = Field(
+        default=None,
+        max_length=32,
+        description="学生用户ID（兼容保留，后端仍按当前登录学生处理）",
+    )
     quiz_id: str = Field(min_length=1, max_length=32, description="测验ID")
 
     @field_validator("student_id", "quiz_id", mode="before")
@@ -57,7 +65,11 @@ class StuQuizDetailRequest(BaseModel):
 class StuQuestionDetailRequest(BaseModel):
     """学生题目详情请求。"""
 
-    student_id: str = Field(min_length=1, max_length=32, description="学生用户ID")
+    student_id: str | None = Field(
+        default=None,
+        max_length=32,
+        description="学生用户ID（兼容保留，后端仍按当前登录学生处理）",
+    )
     question_id: str = Field(min_length=1, max_length=32, description="题目ID")
     quiz_id: str | None = Field(default=None, max_length=32, description="测验ID，可选")
 
@@ -72,7 +84,11 @@ class StuQuestionDetailRequest(BaseModel):
 class StuSubmitAnswerRequest(BaseModel):
     """学生提交答案请求。"""
 
-    student_id: str = Field(min_length=1, max_length=32, description="学生用户ID")
+    student_id: str | None = Field(
+        default=None,
+        max_length=32,
+        description="学生用户ID（已忽略，按当前登录学生处理）",
+    )
     quiz_id: str = Field(min_length=1, max_length=32, description="测验ID")
     question_id: str = Field(min_length=1, max_length=32, description="题目ID")
     answer_md: str | None = Field(default=None, description="Markdown答案文本")
@@ -93,7 +109,11 @@ class StuSubmitAnswerRequest(BaseModel):
 class StuSubmitQuizRequest(BaseModel):
     """学生提交整份测验请求。"""
 
-    student_id: str = Field(min_length=1, max_length=32, description="学生用户ID")
+    student_id: str | None = Field(
+        default=None,
+        max_length=32,
+        description="学生用户ID（兼容保留，后端仍按当前登录学生处理）",
+    )
     quiz_id: str = Field(min_length=1, max_length=32, description="测验ID")
     submitted_at: datetime | None = Field(
         default=None, description="提交时间，不传则使用当前时间"
@@ -110,7 +130,11 @@ class StuSubmitQuizRequest(BaseModel):
 class StuAnswerGradingViewRequest(BaseModel):
     """学生查看 AI 批改视图请求。"""
 
-    student_id: str = Field(min_length=1, max_length=32, description="学生用户ID")
+    student_id: str | None = Field(
+        default=None,
+        max_length=32,
+        description="学生用户ID（兼容保留，后端仍按当前登录学生处理）",
+    )
     answer_id: str = Field(min_length=1, max_length=32, description="答案ID")
 
     @field_validator("student_id", "answer_id", mode="before")
