@@ -179,9 +179,6 @@ class TEAQuestionService:
             "question_id": question_obj.id,
             "content_md": question_obj.content_md,
             "reference_answer": question_obj.reference_answer,
-            "question_type": question_obj.question_type.value
-            if hasattr(question_obj.question_type, "value")
-            else str(question_obj.question_type),
             "status": question_obj.status.value
             if hasattr(question_obj.status, "value")
             else str(question_obj.status),
@@ -371,13 +368,11 @@ class TEAQuestionService:
         teacher_id: int | str,
         content_md: str | None,
         reference_answer: str | None,
-        question_type: str,
         tag_ids_json: str | None,
         images: list[UploadFile] | None,
     ) -> tuple[bool, int, str, dict | None]:
         async with AsyncSessionLocal() as session:
             try:
-                question_type_enum = QuestionType(question_type)
                 tag_ids = self._parse_tag_ids_json(tag_ids_json)
                 normalized_images = self._normalize_upload_files(images)
 
@@ -389,7 +384,7 @@ class TEAQuestionService:
                     creator_id=int(teacher_id),
                     content_md=content_md,
                     reference_answer=reference_answer,
-                    question_type=question_type_enum,
+                    question_type=QuestionType.short_answer,
                     status=QuestionStatus.active,
                 )
                 session.add(new_question)
@@ -448,7 +443,6 @@ class TEAQuestionService:
         question_id: int,
         content_md: str | None,
         reference_answer: str | None,
-        question_type: str | None,
         tag_ids_json: str | None,
         replace_images: bool,
         images: list[UploadFile] | None,
@@ -477,9 +471,6 @@ class TEAQuestionService:
 
                 if reference_answer is not None:
                     question_obj.reference_answer = reference_answer
-
-                if question_type is not None:
-                    question_obj.question_type = QuestionType(question_type)
 
                 if tag_ids_json is not None:
                     tag_ids = self._parse_tag_ids_json(tag_ids_json)

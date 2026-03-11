@@ -126,7 +126,6 @@ async def list_tags(
 async def create_question(
     content_md: str | None = Form(default=None, description="题目内容"),
     reference_answer: str | None = Form(default=None, description="参考答案"),
-    question_type: str = Form(..., description="题目类型"),
     tag_ids_json: str | None = Form(default="[]", description='标签ID列表，支持 "[1,2]" 或 "1,2"'),
     images: list[UploadFile] | None = File(default=None, description="题目图片（可多张）"),
     current_user: UserClaims = get_current_user_dependency,
@@ -140,7 +139,6 @@ async def create_question(
         teacher_id=current_user.user_id,
         content_md=content_md,
         reference_answer=reference_answer,
-        question_type=question_type,
         tag_ids_json=tag_ids_json,
         images=normalized_images,
     )
@@ -157,7 +155,6 @@ async def update_question(
     question_id: int = Form(..., description="题目ID"),
     content_md: str | None = Form(default=None, description="题目内容"),
     reference_answer: str | None = Form(default=None, description="参考答案"),
-    question_type: str | None = Form(default=None, description="题目类型"),
     tag_ids_json: str | None = Form(default=None, description='标签ID列表，支持 "[1,2]" 或 "1,2"'),
     replace_images: bool = Form(default=False, description="是否替换原图片，false 为追加"),
     images: list[UploadFile] | None = File(default=None, description="题目图片（可多张）"),
@@ -176,7 +173,6 @@ async def update_question(
         question_id=question_id,
         content_md=content_md,
         reference_answer=reference_answer,
-        question_type=question_type if question_type and str(question_type).strip() != "" else None,
         tag_ids_json=tag_ids_json,
         replace_images=replace_images,
         images=normalized_images,
