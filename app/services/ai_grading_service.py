@@ -17,6 +17,86 @@ from pydantic import BaseModel, Field
 from app.configs import base_configs
 
 
+FIXED_TYPICAL_ERROR_LIBRARY: tuple[dict[str, str], ...] = (
+    {
+        "pattern_name": "标准化步骤错误",
+        "pattern_desc": "作答过程缺少必要步骤，或书写/化简/表达不规范。",
+        "suggestion_text": "按标准步骤完整书写推导过程，并检查表达是否规范。",
+    },
+    {
+        "pattern_name": "对称性误用",
+        "pattern_desc": "错误套用了轴对称、中心对称、奇偶性等对称性质。",
+        "suggestion_text": "先确认题目是否满足对应对称条件，再使用相关性质。",
+    },
+    {
+        "pattern_name": "不等式转化错误",
+        "pattern_desc": "不等式移项、放缩、变形或区间转换时出现错误。",
+        "suggestion_text": "逐步检查不等式变形依据，特别注意方向变化和取值范围。",
+    },
+    {
+        "pattern_name": "查表/数值计算错误",
+        "pattern_desc": "查表、代值、近似换算或数值计算过程中出现错误。",
+        "suggestion_text": "重新核对查表结果、代入数据和每一步计算过程。",
+    },
+    {
+        "pattern_name": "概念混淆",
+        "pattern_desc": "对定义、公式、性质或适用条件理解混淆。",
+        "suggestion_text": "回到概念定义和公式适用条件，先分清再作答。",
+    },
+)
+
+FIXED_TYPICAL_ERROR_KEYWORDS: dict[str, tuple[str, ...]] = {
+    "标准化步骤错误": (
+        "步骤",
+        "过程",
+        "推导",
+        "化简",
+        "书写",
+        "表达不规范",
+        "格式",
+        "中间",
+    ),
+    "对称性误用": (
+        "对称",
+        "轴对称",
+        "中心对称",
+        "奇函数",
+        "偶函数",
+        "奇偶",
+    ),
+    "不等式转化错误": (
+        "不等式",
+        "大于",
+        "小于",
+        "区间",
+        "范围",
+        "放缩",
+        "取值",
+        "方向",
+    ),
+    "查表/数值计算错误": (
+        "查表",
+        "计算",
+        "数值",
+        "代入",
+        "近似",
+        "小数",
+        "四舍五入",
+        "算错",
+    ),
+    "概念混淆": (
+        "概念",
+        "定义",
+        "性质",
+        "公式",
+        "定理",
+        "条件",
+        "混淆",
+        "误解",
+    ),
+}
+
+
 class AIGradingTypicalError(BaseModel):
     """AI 识别出的典型错误。"""
 
@@ -76,7 +156,7 @@ class AIGradingService:
             "ai_score 和 final_score 必须是数字，范围在 0 到题目满分之间。"
             "只要学生已作答，就必须给出明确分数，不能省略。"
             "若判定为 correct，则 ai_score 和 final_score 必须等于满分。"
-            "typical_errors 是数组，每项包含 pattern_name、pattern_desc、suggestion_text。"
+            "typical_errors 固定返回空数组 []，不要自行分析或生成典型错误。"
             "若学生未作答，则 result_status=unanswered，分数为 0。"
         )
 
@@ -110,15 +190,41 @@ class AIGradingService:
             f"该题已有典型错误模式：\n{typical_error_text}\n\n"
             f"学生答案：\n{student_answer or '无'}\n\n"
             "如果同时提供了作答图片，请结合图片内容一起批改。\n\n"
-            "如果学生答案命中了已有典型错误模式，请优先复用已有的 pattern_name。"
-            "只有在现有模式无法覆盖时，再创建新的 typical_errors。\n\n"
             "请严格返回 JSON，例如："
             '{"result_status":"partial","ai_score":6,"final_score":6,'
             '"ai_feedback":"答案部分正确，步骤不完整",'
-            '"typical_errors":[{"pattern_name":"步骤缺失",'
-            '"pattern_desc":"没有写出关键推导步骤",'
-            '"suggestion_text":"补充中间推导过程"}]}'
+            '"typical_errors":[]}'
         )
+
+    def _build_fixed_typical_errors(self, ai_feedback: str, result_status: str) -> list[AIGradingTypicalError]:
+        if result_status in {"correct", "unanswered"}:
+            return []
+
+        feedback_text = (ai_feedback or "").strip()
+        selected_names: list[str] = []
+        lower_feedback_text = feedback_text.lower()
+
+        for item in FIXED_TYPICAL_ERROR_LIBRARY:
+            pattern_name = item["pattern_name"]
+            keywords = FIXED_TYPICAL_ERROR_KEYWORDS.get(pattern_name, ())
+            if any(keyword.lower() in lower_feedback_text for keyword in keywords):
+                selected_names.append(pattern_name)
+
+        if not selected_names:
+            if any(keyword in feedback_text for keyword in ("步骤", "过程", "推导", "书写")):
+                selected_names.append("标准化步骤错误")
+            elif any(keyword in feedback_text for keyword in ("计算", "代入", "结果", "数值")):
+                selected_names.append("查表/数值计算错误")
+            else:
+                selected_names.append("概念混淆")
+
+        fixed_errors: list[AIGradingTypicalError] = []
+        selected_name_set = set(selected_names[:3])
+        for item in FIXED_TYPICAL_ERROR_LIBRARY:
+            if item["pattern_name"] not in selected_name_set:
+                continue
+            fixed_errors.append(AIGradingTypicalError.model_validate(item))
+        return fixed_errors
 
     def _build_user_content(
         self,
@@ -333,6 +439,10 @@ class AIGradingService:
             result.final_score = max(result.final_score, float(full_score or 0))
         if not result.ai_feedback:
             result.ai_feedback = "AI 已完成批改。"
+        result.typical_errors = self._build_fixed_typical_errors(
+            result.ai_feedback,
+            result.result_status,
+        )
         result.model_name = model_name
         result.raw_content = raw_content
         return result

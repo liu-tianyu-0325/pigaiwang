@@ -27,6 +27,7 @@ from app.storage.database_models import (
     ClassStudent,
     ClassStudentStatus,
     Question,
+    QuestionImage,
     Quiz,
     QuizClassRel,
     QuizQuestion,
@@ -92,6 +93,24 @@ class StuQuizService:
                 await s3_client.resolve_download_url(image_url, bucket_name)
             )
         return resolved
+
+    async def _get_question_image_urls(
+        self,
+        session,
+        question_id: int,
+    ) -> list[str]:
+        image_rows = (
+            (
+                await session.execute(
+                    select(QuestionImage.image_url)
+                    .where(QuestionImage.question_id == question_id)
+                    .order_by(QuestionImage.sort_no.asc(), QuestionImage.id.asc())
+                )
+            )
+            .scalars()
+            .all()
+        )
+        return await self._resolve_answer_image_urls(list(image_rows))
 
     async def _upload_answer_image(
         self,
@@ -405,6 +424,10 @@ class StuQuizService:
                         )
                     ).scalar_one_or_none()
 
+                question_image_urls = await self._get_question_image_urls(
+                    session,
+                    int(question.id),
+                )
                 image_urls: list[str] = []
                 typical_errors: list[dict] = []
                 if answer is not None:
@@ -458,6 +481,7 @@ class StuQuizService:
                         "answer_id": str(answer.id) if answer else None,
                         "question_id": str(question.id),
                         "question": question.content_md,
+                        "question_image_urls": question_image_urls,
                         "reference_answer": question.reference_answer,
                         "my_answer": answer.answer_md if answer else None,
                         "duration_sec": answer.duration_sec if answer else 0,
@@ -857,6 +881,10 @@ class StuQuizService:
                     return False, status.HTTP_404_NOT_FOUND, "答案不存在", None
 
                 answer, _, question = row
+                question_image_urls = await self._get_question_image_urls(
+                    session,
+                    int(question.id),
+                )
                 image_urls = list(
                     (
                         await session.execute(
@@ -895,6 +923,7 @@ class StuQuizService:
                         "quiz_id": str(answer.quiz_id),
                         "question_id": str(answer.question_id),
                         "question": question.content_md,
+                        "question_image_urls": question_image_urls,
                         "reference_answer": question.reference_answer,
                         "my_answer": answer.answer_md,
                         "image_urls": image_urls,
