@@ -5,7 +5,7 @@ from io import BytesIO
 
 import pandas as pd
 from fastapi import UploadFile, status
-from sqlalchemy import and_, func, select, update, text
+from sqlalchemy import and_, distinct, func, select, update, text
 
 from app.storage.base import AsyncSessionLocal
 from app.storage.database_models import (
@@ -37,6 +37,35 @@ class TEAClassService:
             SubmissionStatus.reviewed,
         )
 
+    async def _get_finished_quiz_count_map(
+        self,
+        session,
+        class_ids: list[int],
+    ) -> dict[int, int]:
+        if not class_ids:
+            return {}
+
+        rows = (
+            await session.execute(
+                select(
+                    QuizSubmission.class_id,
+                    func.count(distinct(QuizSubmission.student_id)).label(
+                        "finished_quiz_count"
+                    ),
+                )
+                .where(
+                    QuizSubmission.class_id.in_(class_ids),
+                    QuizSubmission.status.in_(self._formal_submission_statuses()),
+                )
+                .group_by(QuizSubmission.class_id)
+            )
+        ).all()
+        return {
+            int(row.class_id): int(row.finished_quiz_count or 0)
+            for row in rows
+            if row.class_id is not None
+        }
+
     async def list_classes(
         self,
         teacher_id: int | str,
@@ -57,6 +86,10 @@ class TEAClassService:
             stmt = stmt.order_by(ClassRoom.id.desc())
             result = await session.execute(stmt)
             items = result.scalars().all()
+            finished_quiz_count_map = await self._get_finished_quiz_count_map(
+                session,
+                [int(item.id) for item in items if item.id is not None],
+            )
 
             data = [
                 {
@@ -64,7 +97,7 @@ class TEAClassService:
                     "class_name": item.class_name,
                     "grade_name": item.grade_name,
                     "student_count": item.student_count,
-                    "finished_quiz_count": item.finished_quiz_count,
+                    "finished_quiz_count": finished_quiz_count_map.get(int(item.id), 0),
                     "remark": item.remark,
                 }
                 for item in items
@@ -130,12 +163,17 @@ class TEAClassService:
             if not item:
                 return False, status.HTTP_404_NOT_FOUND, "班级不存在", None
 
+            finished_quiz_count_map = await self._get_finished_quiz_count_map(
+                session,
+                [int(item.id)],
+            )
+
             data = {
                 "class_id": item.id,
                 "class_name": item.class_name,
                 "grade_name": item.grade_name,
                 "student_count": item.student_count,
-                "finished_quiz_count": item.finished_quiz_count,
+                "finished_quiz_count": finished_quiz_count_map.get(int(item.id), 0),
                 "remark": item.remark,
             }
             return True, status.HTTP_200_OK, "获取班级详情成功", data
