@@ -673,59 +673,6 @@ class StuQuizService:
                     None,
                 )
 
-    async def trigger_answer_grading(
-        self,
-        student_id: str,
-        answer_id: str,
-    ) -> tuple[bool, int, str, dict | None]:
-        """手动触发指定答案的 AI 批改。"""
-        async with AsyncSessionLocal() as session:
-            try:
-                answer = (
-                    await session.execute(
-                        select(SubmissionAnswer, QuizSubmission)
-                        .join(
-                            QuizSubmission,
-                            QuizSubmission.id == SubmissionAnswer.submission_id,
-                        )
-                        .where(
-                            SubmissionAnswer.id == int(answer_id),
-                            QuizSubmission.student_id == int(student_id),
-                        )
-                    )
-                ).first()
-                if answer is None:
-                    return False, status.HTTP_404_NOT_FOUND, "答案不存在", None
-
-                answer_entity = answer[0]
-                if not answer_entity.is_answered:
-                    return (
-                        False,
-                        status.HTTP_400_BAD_REQUEST,
-                        "当前答案未作答，无法触发 AI 批改",
-                        None,
-                    )
-
-                answer_grading_service.schedule_grade_answer(int(answer_id))
-                return (
-                    True,
-                    status.HTTP_200_OK,
-                    "AI 批改任务已触发",
-                    {
-                        "answer_id": str(answer_entity.id),
-                        "grading_status": self._build_answer_grading_status(
-                            answer_entity, answer[1]
-                        ),
-                    },
-                )
-            except Exception as e:
-                return (
-                    False,
-                    status.HTTP_500_INTERNAL_SERVER_ERROR,
-                    f"操作失败，请稍后重试: {e}",
-                    None,
-                )
-
     async def get_answer_grading_view(
         self,
         student_id: str,

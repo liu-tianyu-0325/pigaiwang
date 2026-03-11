@@ -16,6 +16,7 @@ from app.storage.database_models import (
     ImportItemResultStatus,
     ImportStatus,
     QuizSubmission,
+    SubmissionStatus,
     StudentImportBatch,
     StudentImportBatchItem,
     StudentProfile,
@@ -27,6 +28,14 @@ from app.utils.validation import validation_service
 
 class TEAClassService:
     """教师端班级管理服务。"""
+
+    @staticmethod
+    def _formal_submission_statuses() -> tuple[SubmissionStatus, ...]:
+        return (
+            SubmissionStatus.submitted,
+            SubmissionStatus.grading,
+            SubmissionStatus.reviewed,
+        )
 
     async def list_classes(
         self,
@@ -255,6 +264,7 @@ class TEAClassService:
                     and_(
                         QuizSubmission.student_id == AppUser.id,
                         QuizSubmission.class_id == class_id,
+                        QuizSubmission.status.in_(self._formal_submission_statuses()),
                     ),
                 )
                 .where(ClassStudent.class_id == class_id)

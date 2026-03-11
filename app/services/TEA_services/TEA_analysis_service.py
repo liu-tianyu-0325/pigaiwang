@@ -292,7 +292,7 @@ class TEAAnalysisService:
     ) -> float:
         stmt = select(func.coalesce(func.avg(QuizSubmission.final_score), 0)).where(
             QuizSubmission.quiz_id == quiz_id,
-            QuizSubmission.status.in_(self._formal_submission_statuses()),
+                QuizSubmission.status.in_(self._formal_submission_statuses()),
         )
         if class_id is not None:
             stmt = stmt.where(QuizSubmission.class_id == class_id)
@@ -310,10 +310,12 @@ class TEAAnalysisService:
 
         avg_stmt = select(func.coalesce(func.avg(QuizSubmission.total_duration_sec), 0)).where(
             QuizSubmission.quiz_id.in_(quiz_ids),
+            QuizSubmission.status.in_(self._formal_submission_statuses()),
             QuizSubmission.total_duration_sec > 0,
         )
         min_stmt = select(func.coalesce(func.min(QuizSubmission.total_duration_sec), 0)).where(
             QuizSubmission.quiz_id.in_(quiz_ids),
+            QuizSubmission.status.in_(self._formal_submission_statuses()),
             QuizSubmission.total_duration_sec > 0,
         )
 
@@ -335,7 +337,10 @@ class TEAAnalysisService:
                 "90_100": 0,
             }
 
-        stmt = select(QuizSubmission.final_score).where(QuizSubmission.quiz_id.in_(quiz_ids))
+        stmt = select(QuizSubmission.final_score).where(
+            QuizSubmission.quiz_id.in_(quiz_ids),
+            QuizSubmission.status.in_(self._formal_submission_statuses()),
+        )
         result = await session.execute(stmt)
         scores = [float(item or 0) for item in result.scalars().all()]
 
@@ -395,6 +400,7 @@ class TEAAnalysisService:
                 .join(QuizSubmission, QuizSubmission.id == SubmissionAnswer.submission_id)
                 .where(
                     QuizSubmission.quiz_id.in_(quiz_ids),
+                    QuizSubmission.status.in_(self._formal_submission_statuses()),
                     SubmissionAnswer.question_id == question_id,
                 )
             )
@@ -505,7 +511,10 @@ class TEAAnalysisService:
                         await self._get_quiz_average_score(session, quiz_id)
                     )
 
-                submission_stmt = select(QuizSubmission).where(QuizSubmission.quiz_id.in_(quiz_ids))
+                submission_stmt = select(QuizSubmission).where(
+                    QuizSubmission.quiz_id.in_(quiz_ids),
+                    QuizSubmission.status.in_(self._formal_submission_statuses()),
+                )
                 submission_result = await session.execute(submission_stmt)
                 submission_rows = submission_result.scalars().all()
 
@@ -699,6 +708,7 @@ class TEAAnalysisService:
                         .where(
                             QuizSubmission.quiz_id == quiz_id,
                             QuizSubmission.class_id == class_id,
+                            QuizSubmission.status.in_(self._formal_submission_statuses()),
                             SubmissionAnswer.question_id == question_id,
                         )
                     )

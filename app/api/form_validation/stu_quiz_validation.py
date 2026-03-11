@@ -107,20 +107,6 @@ class StuSubmitQuizRequest(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
 
-class StuTriggerAnswerGradingRequest(BaseModel):
-    """学生手动触发 AI 批改请求。"""
-
-    student_id: str = Field(min_length=1, max_length=32, description="学生用户ID")
-    answer_id: str = Field(min_length=1, max_length=32, description="答案ID")
-
-    @field_validator("student_id", "answer_id", mode="before")
-    @classmethod
-    def strip_common_fields(cls, value: Any) -> Any:
-        return strip_strings(value)
-
-    model_config = ConfigDict(from_attributes=True)
-
-
 class StuAnswerGradingViewRequest(BaseModel):
     """学生查看 AI 批改视图请求。"""
 

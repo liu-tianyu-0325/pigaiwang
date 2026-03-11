@@ -114,15 +114,6 @@ class StuSubmitQuizResponseModel(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
 
-class StuTriggerAnswerGradingResponseModel(BaseModel):
-    """学生手动触发 AI 批改响应。"""
-
-    answer_id: str = Field(description="答案ID")
-    grading_status: str = Field(description="答案批改状态")
-
-    model_config = ConfigDict(from_attributes=True)
-
-
 class StuAnswerGradingViewResponseModel(BaseModel):
     """学生查看 AI 批改视图响应。"""
 

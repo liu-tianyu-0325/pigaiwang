@@ -10,12 +10,21 @@ from app.storage.database_models import (
     ClassStudent,
     ClassStudentStatus,
     QuizSubmission,
+    SubmissionStatus,
     StudentProfile,
 )
 
 
 class StuUserService:
     """处理学生个人信息相关逻辑。"""
+
+    @staticmethod
+    def _formal_submission_statuses() -> tuple[SubmissionStatus, ...]:
+        return (
+            SubmissionStatus.submitted,
+            SubmissionStatus.grading,
+            SubmissionStatus.reviewed,
+        )
 
     async def get_profile(self, student_id: str) -> tuple[bool, int, str, dict | None]:
         """获取学生个人信息。"""
@@ -54,7 +63,10 @@ class StuUserService:
                             func.count(QuizSubmission.id),
                             func.coalesce(func.avg(QuizSubmission.accuracy_rate), 0),
                             func.coalesce(func.sum(QuizSubmission.answered_count), 0),
-                        ).where(QuizSubmission.student_id == int(student_id))
+                        ).where(
+                            QuizSubmission.student_id == int(student_id),
+                            QuizSubmission.status.in_(self._formal_submission_statuses()),
+                        )
                     )
                 ).first()
                 quiz_count = int(stats_row[0] or 0)
